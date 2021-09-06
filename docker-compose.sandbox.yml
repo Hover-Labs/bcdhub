@@ -87,14 +87,16 @@ services:
   flextesa:
     restart: always
     image: tqtezos/flextesa:20210514
-    command: flobox start
+    command: flobox start --keep-root
     environment:
       - block_time=4
+      - flextesa_node_cors_origin=*
     ports:
       - 127.0.0.1:8732:20000
       - 172.17.0.1:8732:20000
     logging: *bcd-logging
-
+    volumes:
+      - flextesa:/tmp/mini-box
   gui:
     container_name: sandbox-gui
     restart: always
@@ -108,5 +110,6 @@ services:
 volumes:
   esdata:
   bcdshare:
+  flextesa:
   db:
     driver: local
