@@ -5,7 +5,7 @@ if ! [ -x "$(command -v docker-compose)" ]; then
   exit 1
 fi
 
-domains=(sandbox.hover.engineering sandbox-bcd.hover.engineering)
+domains=(sandbox.hover.engineering bcd.hover.engineering)
 rsa_key_size=4096
 data_path="./certbot"
 email="hello@hover.engineering" # Adding a valid address is strongly recommended
