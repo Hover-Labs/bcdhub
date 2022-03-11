@@ -104,6 +104,7 @@ services:
     container_name: sandbox-gui
     restart: always
     image: ghcr.io/baking-bad/bcdhub-gui:${TAG}
+    command: /bin/sh -c 'sed -i "s/API_URI:\"http:\/\/localhost:14000\/v1\"/API_URI:\"https:\/\/bcd.hover.engineering\/v1\"/g" js/app.e13a5560.js && sh /docker-entrypoint.sh'
     environment:
       - VUE_APP_API_URI=https://bcd.hover.engineering/v1
     depends_on:
