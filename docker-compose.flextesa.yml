@@ -42,6 +42,7 @@ services:
       - db
     ports:
       - 127.0.0.1:14000:14000
+      - 172.17.0.1:14000:14000
     volumes:
       - bcdshare:/etc/bcd
     links:
@@ -103,6 +104,8 @@ services:
     container_name: sandbox-gui
     restart: always
     image: ghcr.io/baking-bad/bcdhub-gui:${TAG}
+    environment:
+      - VUE_APP_API_URI=https://bcd.hover.engineering/v1
     depends_on:
       - api
     ports:
