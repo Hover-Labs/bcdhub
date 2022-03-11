@@ -88,14 +88,20 @@ func (api *app) makeRouter() {
 		v1.GET("swagger.json", api.Context.GetSwaggerDoc)
 
 		v1.GET("head", cache.CachePage(store, time.Second*10, api.Context.GetHead))
+		v1.GET("head/:network", cache.CachePage(store, time.Second*10, api.Context.GetHeadByNetwork))
 		v1.GET("opg/:hash", api.Context.GetOperation)
-		v1.GET("operation/:id/error_location", api.Context.GetOperationErrorLocation)
 		v1.GET("pick_random", api.Context.GetRandomContract)
 		v1.GET("search", api.Context.Search)
 		v1.POST("fork", api.Context.ForkContract)
 		v1.GET("config", api.Context.GetConfig)
 
 		v1.POST("diff", api.Context.GetDiff)
+
+		operation := v1.Group("operation/:id")
+		{
+			operation.GET("error_location", api.Context.GetOperationErrorLocation)
+			operation.GET("diff", api.Context.GetOperationDiff)
+		}
 
 		stats := v1.Group("stats")
 		{
@@ -166,12 +172,6 @@ func (api *app) makeRouter() {
 			}
 		}
 
-		domains := v1.Group("domains/:network")
-		{
-			domains.GET("", api.Context.TezosDomainsList)
-			domains.GET("resolve", api.Context.ResolveDomain)
-		}
-
 		account := v1.Group("account/:network")
 		{
 			account.GET("", api.Context.GetBatchTokenBalances)
@@ -197,17 +197,23 @@ func (api *app) makeRouter() {
 			}
 		}
 
-		metadata := v1.Group("metadata")
-		{
-			metadata.POST("upload", api.Context.UploadMetadata)
-			metadata.GET("list", api.Context.ListMetadata)
-			metadata.DELETE("delete", api.Context.DeleteMetadata)
-		}
-
 		dapps := v1.Group("dapps")
 		{
 			dapps.GET("", api.Context.GetDAppList)
-			dapps.GET(":slug", api.Context.GetDApp)
+			dappsBySlug := dapps.Group(":slug")
+			{
+				dappsBySlug.GET("", api.Context.GetDApp)
+				dex := dappsBySlug.Group("dex")
+				{
+					dex.GET("tokens", api.Context.GetDexTokens)
+					dex.GET("tezos_volume", cache.CachePage(store, time.Minute, api.Context.GetDexTezosVolume))
+				}
+			}
+		}
+
+		globalConstants := v1.Group("global_constants/:network/:address")
+		{
+			globalConstants.GET("", api.Context.GetGlobalConstant)
 		}
 	}
 	api.Router = r

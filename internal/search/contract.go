@@ -13,7 +13,6 @@ type Contract struct {
 	Network   string    `json:"network"`
 	Level     int64     `json:"level"`
 	Timestamp time.Time `json:"timestamp"`
-	Language  string    `json:"language,omitempty"`
 	Hash      string    `json:"hash"`
 
 	Tags        []string `json:"tags,omitempty"`
@@ -26,7 +25,6 @@ type Contract struct {
 	Manager  string `json:"manager,omitempty"`
 	Delegate string `json:"delegate,omitempty"`
 
-	ProjectID     string `json:"project_id"`
 	FoundBy       string `json:"found_by,omitempty"`
 	Alias         string `json:"alias,omitempty"`
 	DelegateAlias string `json:"delegate_alias,omitempty"`
@@ -48,19 +46,19 @@ func (c Contract) GetIndex() string {
 // GetScores -
 func (c Contract) GetScores(search string) []string {
 	return []string{
-		"contract^10",
-		"alias^9",
-		"tags^9",
-		"fail_strings^6",
-		"annotations^3",
-		"hardcoded^2",
+		"address^10",
+		"alias^8",
+		"tags^6",
+		"fail_strings^1",
+		"annotations^1",
+		"hardcoded^1",
 	}
 }
 
 // GetFields -
 func (c Contract) GetFields() []string {
 	return []string{
-		"contract",
+		"address",
 		"alias",
 		"tags",
 		"fail_strings",
@@ -90,18 +88,24 @@ func (c *Contract) Prepare(model models.Model) {
 		return
 	}
 
-	c.Address = cont.Address
-	c.Annotations = cont.Annotations
-	c.Delegate = cont.Delegate
-	c.Entrypoints = cont.Entrypoints
-	c.FailStrings = cont.FailStrings
-	c.Hardcoded = cont.Hardcoded
-	c.Hash = cont.Hash
-	c.Language = cont.Language
+	script := cont.Alpha
+	if cont.BabylonID > 0 {
+		script = cont.Babylon
+	}
+
+	c.Address = cont.Account.Address
+	c.Alias = cont.Account.Alias
+	c.Annotations = script.Annotations
+	c.Delegate = cont.Delegate.Address
+	c.DelegateAlias = cont.Delegate.Alias
+	c.Entrypoints = script.Entrypoints
+	c.FailStrings = script.FailStrings
+	c.Hardcoded = script.Hardcoded
+	c.Hash = script.Hash
 	c.Level = cont.Level
-	c.Manager = cont.Manager
+	c.Manager = cont.Manager.Address
 	c.Network = cont.Network.String()
-	c.ProjectID = cont.ProjectID
 	c.Tags = cont.Tags.ToArray()
 	c.Timestamp = cont.Timestamp.UTC()
+	c.LastAction = &cont.LastAction
 }

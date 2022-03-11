@@ -1,14 +1,14 @@
 package migrations
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/baking-bad/bcdhub/internal/config"
 	"github.com/baking-bad/bcdhub/internal/models"
 	"github.com/baking-bad/bcdhub/internal/models/contract"
-	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/baking-bad/bcdhub/internal/search"
-	"gorm.io/gorm"
+	"github.com/go-pg/pg/v10"
 )
 
 // FixLostSearchContracts -
@@ -44,16 +44,16 @@ func (m *FixLostSearchContracts) Do(ctx *config.Context) error {
 	return nil
 }
 
-func (m *FixLostSearchContracts) getContracts(db *gorm.DB) (resp []contract.Contract, err error) {
-	query := db.Table(models.DocContracts).Order("id asc")
+func (m *FixLostSearchContracts) getContracts(db *pg.DB) (resp []contract.Contract, err error) {
+	query := db.Model((*contract.Contract)(nil)).Order("contract.id asc").Relation("Account").Relation("Manager").Relation("Delegate").Relation("Alpha").Relation("Babylon")
 	if m.lastID > 0 {
-		query.Where("id > ?", m.lastID)
+		query.Where("contract.id > ?", m.lastID)
 	}
-	err = query.Limit(1000).Find(&resp).Error
+	err = query.Limit(1000).Select(&resp)
 	return
 }
 
-func (m *FixLostSearchContracts) saveSearchModels(ctx *config.Context, contracts []contract.Contract) error {
+func (m *FixLostSearchContracts) saveSearchModels(internalContext *config.Context, contracts []contract.Contract) error {
 	items := make([]models.Model, len(contracts))
 	for i := range contracts {
 		items[i] = &contracts[i]
@@ -62,13 +62,5 @@ func (m *FixLostSearchContracts) saveSearchModels(ctx *config.Context, contracts
 		}
 	}
 	data := search.Prepare(items)
-
-	for i := range data {
-		if typ, ok := data[i].(*search.Contract); ok {
-			typ.Alias = ctx.CachedAlias(types.NewNetwork(typ.Network), typ.Address)
-			typ.DelegateAlias = ctx.CachedAlias(types.NewNetwork(typ.Network), typ.Delegate)
-		}
-	}
-
-	return ctx.Searcher.Save(data)
+	return internalContext.Searcher.Save(context.Background(), data)
 }

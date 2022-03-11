@@ -1,19 +1,17 @@
 package indexer
 
 import (
+	"context"
 	"fmt"
-	"io/ioutil"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/baking-bad/bcdhub/internal/bcd"
 	"github.com/baking-bad/bcdhub/internal/config"
 	"github.com/baking-bad/bcdhub/internal/helpers"
-	"github.com/baking-bad/bcdhub/internal/index"
 	"github.com/baking-bad/bcdhub/internal/logger"
-	"github.com/baking-bad/bcdhub/internal/models"
 	"github.com/baking-bad/bcdhub/internal/models/block"
+	"github.com/baking-bad/bcdhub/internal/models/contract"
 	"github.com/baking-bad/bcdhub/internal/models/protocol"
 	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/baking-bad/bcdhub/internal/noderpc"
@@ -22,12 +20,11 @@ import (
 	"github.com/baking-bad/bcdhub/internal/parsers/operations"
 	"github.com/baking-bad/bcdhub/internal/postgres/core"
 	"github.com/baking-bad/bcdhub/internal/rollback"
+	"github.com/go-pg/pg/v10"
 	"github.com/pkg/errors"
-	"gorm.io/gorm"
 )
 
 var errBcdQuit = errors.New("bcd-quit")
-var errRollback = errors.New("rollback")
 var errSameLevel = errors.New("Same level")
 
 // BoostIndexer -
@@ -35,149 +32,55 @@ type BoostIndexer struct {
 	*config.Context
 
 	rpc             noderpc.INode
-	externalIndexer index.Indexer
+	receiver        *Receiver
 	state           block.Block
 	currentProtocol protocol.Protocol
+	blocks          map[int64]*Block
 
-	updateTicker        *time.Ticker
-	stop                chan struct{}
-	Network             types.Network
-	boost               bool
-	skipDelegatorBlocks bool
-	stopped             bool
-}
+	updateTicker *time.Ticker
+	Network      types.Network
 
-func (bi *BoostIndexer) fetchExternalProtocols() error {
-	logger.Info().Str("network", bi.Network.String()).Msg("Fetching external protocols")
-	existingProtocols, err := bi.Protocols.GetByNetworkWithSort(bi.Network, "start_level", "desc")
-	if err != nil {
-		return err
-	}
-
-	exists := make(map[string]bool)
-	for _, existingProtocol := range existingProtocols {
-		exists[existingProtocol.Hash] = true
-	}
-
-	extProtocols, err := bi.externalIndexer.GetProtocols()
-	if err != nil {
-		return err
-	}
-
-	protocols := make([]models.Model, 0)
-	for i := range extProtocols {
-		if _, ok := exists[extProtocols[i].Hash]; ok {
-			continue
-		}
-		symLink, err := bcd.GetProtoSymLink(extProtocols[i].Hash)
-		if err != nil {
-			return err
-		}
-		alias := extProtocols[i].Alias
-		if alias == "" {
-			alias = extProtocols[i].Hash[:8]
-		}
-
-		newProtocol := &protocol.Protocol{
-			Hash:       extProtocols[i].Hash,
-			Alias:      alias,
-			StartLevel: extProtocols[i].StartLevel,
-			EndLevel:   extProtocols[i].LastLevel,
-			SymLink:    symLink,
-			Network:    bi.Network,
-			Constants: &protocol.Constants{
-				CostPerByte:                  extProtocols[i].Constants.CostPerByte,
-				HardStorageLimitPerOperation: extProtocols[i].Constants.HardStorageLimitPerOperation,
-				HardGasLimitPerOperation:     extProtocols[i].Constants.HardGasLimitPerOperation,
-				TimeBetweenBlocks:            extProtocols[i].Constants.TimeBetweenBlocks,
-			},
-		}
-
-		protocols = append(protocols, newProtocol)
-		logger.Info().Str("network", bi.Network.String()).Msgf("Fetched %s", alias)
-	}
-
-	return bi.Storage.Save(protocols)
+	indicesInit sync.Once
 }
 
 // NewBoostIndexer -
-func NewBoostIndexer(cfg config.Config, network types.Network, opts ...BoostIndexerOption) (*BoostIndexer, error) {
+func NewBoostIndexer(ctx context.Context, internalCtx config.Context, rpcConfig config.RPCConfig, network types.Network) (*BoostIndexer, error) {
 	logger.Info().Str("network", network.String()).Msg("Creating indexer object...")
 
-	rpcProvider, ok := cfg.RPC[network.String()]
-	if !ok {
-		return nil, errors.Errorf("Unknown network %s", network)
+	rpcOpts := []noderpc.NodeOption{
+		noderpc.WithTimeout(time.Duration(rpcConfig.Timeout) * time.Second),
 	}
+
+	if internalCtx.Config.Indexer.Cache {
+		rpcOpts = append(rpcOpts, noderpc.WithCache(internalCtx.Config.SharePath, network.String()))
+	}
+
 	rpc := noderpc.NewWaitNodeRPC(
-		rpcProvider.URI,
-		noderpc.WithTimeout(time.Duration(rpcProvider.Timeout)*time.Second),
+		rpcConfig.URI,
+		rpcOpts...,
 	)
 
-	ctx := config.NewContext(
-		config.WithConfigCopy(cfg),
-		config.WithStorage(cfg.Storage, "indexer", 10),
-		config.WithSearch(cfg.Storage),
-		config.WithShare(cfg.SharePath),
-	)
+	receiverThreadsCount := 2
+	if types.Mainnet == network {
+		receiverThreadsCount = 10
+	}
 
 	bi := &BoostIndexer{
-		Context: ctx,
-		Network: network,
-		rpc:     rpc,
-		stop:    make(chan struct{}),
+		Context:  &internalCtx,
+		Network:  network,
+		rpc:      rpc,
+		receiver: NewReceiver(rpc, 100, int64(receiverThreadsCount)),
+		blocks:   make(map[int64]*Block),
 	}
 
-	for _, opt := range opts {
-		opt(bi)
-	}
-
-	if err := bi.init(ctx.StorageDB); err != nil {
-		ctx.Close()
+	if err := bi.init(ctx, bi.Context.StorageDB); err != nil {
 		return nil, err
 	}
 
 	return bi, nil
 }
 
-func executeScripts(db *core.Postgres, network types.Network) error {
-	files, err := ioutil.ReadDir("scripts")
-	if err != nil {
-		return err
-	}
-	for i := range files {
-		path := fmt.Sprintf("scripts/%s", files[i].Name())
-		raw, err := ioutil.ReadFile(path)
-		if err != nil {
-			return err
-		}
-
-		script := string(raw)
-		if strings.HasPrefix(files[i].Name(), "series_") {
-			script = fmt.Sprintf(script, network.String(), network, network.String(), network.String())
-		}
-
-		if err := db.Execute(script); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (bi *BoostIndexer) init(db *core.Postgres) error {
-	if err := bi.Storage.CreateIndexes(); err != nil {
-		return err
-	}
-
-	if err := executeScripts(db, bi.Network); err != nil {
-		return err
-	}
-
-	if bi.boost {
-		if err := bi.fetchExternalProtocols(); err != nil {
-			return err
-		}
-	}
-
+func (bi *BoostIndexer) init(ctx context.Context, db *core.Postgres) error {
 	currentState, err := bi.Blocks.Last(bi.Network)
 	if err != nil {
 		return err
@@ -200,7 +103,7 @@ func (bi *BoostIndexer) init(db *core.Postgres) error {
 			return err
 		}
 
-		if err := bi.Storage.Save([]models.Model{&currentProtocol}); err != nil {
+		if err := currentProtocol.Save(db.DB); err != nil {
 			return err
 		}
 	}
@@ -211,20 +114,21 @@ func (bi *BoostIndexer) init(db *core.Postgres) error {
 }
 
 // Sync -
-func (bi *BoostIndexer) Sync(wg *sync.WaitGroup) {
+func (bi *BoostIndexer) Sync(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	bi.stopped = false
 	localSentry := helpers.GetLocalSentry()
 	helpers.SetLocalTagSentry(localSentry, "network", bi.Network.String())
 
+	wg.Add(1)
+	go bi.indexBlock(ctx, wg)
+
+	bi.receiver.Start(ctx)
+
 	// First tick
-	if err := bi.process(); err != nil {
+	if err := bi.process(ctx); err != nil {
 		logger.Err(err)
 		helpers.CatchErrorSentry(err)
-	}
-	if bi.stopped {
-		return
 	}
 
 	everySecond := false
@@ -235,12 +139,10 @@ func (bi *BoostIndexer) Sync(wg *sync.WaitGroup) {
 	bi.setUpdateTicker(0)
 	for {
 		select {
-		case <-bi.stop:
-			bi.stopped = true
-			bi.Context.Close()
+		case <-ctx.Done():
 			return
 		case <-bi.updateTicker.C:
-			if err := bi.process(); err != nil {
+			if err := bi.process(ctx); err != nil {
 				if errors.Is(err, errSameLevel) {
 					if !everySecond {
 						everySecond = true
@@ -277,61 +179,73 @@ func (bi *BoostIndexer) setUpdateTicker(seconds int) {
 	bi.updateTicker = time.NewTicker(duration)
 }
 
-// Stop -
-func (bi *BoostIndexer) Stop() {
-	bi.stop <- struct{}{}
+func (bi *BoostIndexer) indexBlock(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case block := <-bi.receiver.Blocks():
+			bi.blocks[block.Header.Level] = block
+
+		case <-ticker.C:
+			if block, ok := bi.blocks[bi.state.Level+1]; ok {
+				if bi.state.Level > 0 && block.Header.Predecessor != bi.state.Hash {
+					if !time.Now().Add(time.Duration(-5) * time.Minute).After(block.Header.Timestamp) { // Check that node is out of sync
+						if err := bi.Rollback(ctx); err != nil {
+							logger.Error().Err(err).Msg("Rollback")
+						}
+					}
+				}
+
+				if err := bi.handleBlock(ctx, block); err != nil {
+					logger.Error().Err(err).Msg("handleBlock")
+				}
+
+				delete(bi.blocks, block.Header.Level)
+			}
+		}
+	}
 }
 
 // Index -
-func (bi *BoostIndexer) Index(levels []int64) error {
-	if len(levels) == 0 {
-		return nil
-	}
-	helpers.SetTagSentry("network", bi.Network.String())
-
-	for _, level := range levels {
+func (bi *BoostIndexer) Index(ctx context.Context, head noderpc.Header) error {
+	for level := bi.state.Level + 1; level <= head.Level; level++ {
 		helpers.SetTagSentry("block", fmt.Sprintf("%d", level))
 
 		select {
-		case <-bi.stop:
-			bi.stopped = true
-			bi.Context.Close()
+		case <-ctx.Done():
 			return errBcdQuit
 		default:
+			bi.receiver.AddTask(level)
 		}
-
-		head, err := bi.rpc.GetHeader(level)
-		if err != nil {
-			return err
-		}
-
-		if bi.state.Level > 0 && head.Predecessor != bi.state.Hash && !bi.boost {
-			return errRollback
-		}
-
-		if err := bi.handleBlock(head); err != nil {
-			return err
-		}
-
 	}
+
+	bi.indicesInit.Do(bi.createIndices)
+
 	return nil
 }
 
-func (bi *BoostIndexer) handleBlock(head noderpc.Header) error {
+func (bi *BoostIndexer) handleBlock(ctx context.Context, block *Block) error {
 	result := parsers.NewResult()
-	err := bi.StorageDB.DB.Transaction(
-		func(tx *gorm.DB) error {
-			logger.Info().Str("network", bi.Network.String()).Msgf("indexing %d block", head.Level)
+	err := bi.StorageDB.DB.RunInTransaction(ctx,
+		func(tx *pg.Tx) error {
+			logger.Info().Str("network", bi.Network.String()).Msgf("indexing %7d block", block.Header.Level)
 
-			if head.Protocol != bi.currentProtocol.Hash {
-				logger.Info().Str("network", bi.Network.String()).Msgf("New protocol detected: %s -> %s", bi.currentProtocol.Hash, head.Protocol)
+			if block.Header.Protocol != bi.currentProtocol.Hash || (bi.Network == types.Mainnet && block.Header.Level == 1) {
+				logger.Info().Str("network", bi.Network.String()).Msgf("New protocol detected: %s -> %s", bi.currentProtocol.Hash, block.Header.Protocol)
 
-				if err := bi.migrate(head, tx); err != nil {
+				if err := bi.migrate(block.Header, tx); err != nil {
 					return err
 				}
 			}
 
-			res, err := bi.getDataFromBlock(head)
+			res, err := bi.getDataFromBlock(block)
 			if err != nil {
 				return err
 			}
@@ -341,7 +255,7 @@ func (bi *BoostIndexer) handleBlock(head noderpc.Header) error {
 			}
 
 			result.Merge(res)
-			if err := bi.createBlock(head, tx); err != nil {
+			if err := bi.createBlock(block.Header, tx); err != nil {
 				return err
 			}
 			return nil
@@ -351,27 +265,27 @@ func (bi *BoostIndexer) handleBlock(head noderpc.Header) error {
 }
 
 // Rollback -
-func (bi *BoostIndexer) Rollback() error {
-	logger.Warning().Str("network", bi.Network.String()).Msgf("Rollback from %d", bi.state.Level)
+func (bi *BoostIndexer) Rollback(ctx context.Context) error {
+	logger.Warning().Str("network", bi.Network.String()).Msgf("Rollback from %7d", bi.state.Level)
 
 	lastLevel, err := bi.getLastRollbackBlock()
 	if err != nil {
 		return err
 	}
 
-	manager := rollback.NewManager(bi.Searcher, bi.Storage, bi.BigMapDiffs, bi.Transfers)
-	if err := manager.Rollback(bi.StorageDB.DB, bi.state, lastLevel); err != nil {
+	manager := rollback.NewManager(bi.rpc, bi.Searcher, bi.Storage, bi.Blocks, bi.BigMapDiffs, bi.Transfers)
+	if err := manager.Rollback(ctx, bi.StorageDB.DB, bi.state, lastLevel); err != nil {
 		return err
 	}
 
-	helpers.CatchErrorSentry(errors.Errorf("[%s] Rollback from %d to %d", bi.Network, bi.state.Level, lastLevel))
+	helpers.CatchErrorSentry(errors.Errorf("[%s] Rollback from %7d to %7d", bi.Network, bi.state.Level, lastLevel))
 
 	newState, err := bi.Blocks.Last(bi.Network)
 	if err != nil {
 		return err
 	}
 	bi.state = newState
-	logger.Info().Str("network", bi.Network.String()).Msgf("New indexer state: %d", bi.state.Level)
+	logger.Info().Str("network", bi.Network.String()).Msgf("New indexer state: %7d", bi.state.Level)
 	logger.Info().Str("network", bi.Network.String()).Msg("Rollback finished")
 	return nil
 }
@@ -392,7 +306,7 @@ func (bi *BoostIndexer) getLastRollbackBlock() (int64, error) {
 		}
 
 		if block.Predecessor == headAtLevel.Predecessor {
-			logger.Warning().Str("network", bi.Network.String()).Msgf("Found equal predecessors at level: %d", block.Level)
+			logger.Warning().Str("network", bi.Network.String()).Msgf("Found equal predecessors at level: %7d", block.Level)
 			end = true
 			lastLevel = block.Level - 1
 		}
@@ -400,29 +314,7 @@ func (bi *BoostIndexer) getLastRollbackBlock() (int64, error) {
 	return lastLevel, nil
 }
 
-func (bi *BoostIndexer) getBoostBlocks(head noderpc.Header) ([]int64, error) {
-	levels, err := bi.externalIndexer.GetContractOperationBlocks(bi.state.Level, head.Level, bi.skipDelegatorBlocks)
-	if err != nil {
-		return nil, err
-	}
-
-	protocols, err := bi.externalIndexer.GetProtocols()
-	if err != nil {
-		return nil, err
-	}
-
-	protocolLevels := make([]int64, 0)
-	for i := range protocols {
-		if protocols[i].StartLevel > bi.state.Level && protocols[i].StartLevel > 0 {
-			protocolLevels = append(protocolLevels, protocols[i].StartLevel)
-		}
-	}
-
-	result := helpers.Merge2ArraysInt64(levels, protocolLevels)
-	return result, err
-}
-
-func (bi *BoostIndexer) process() error {
+func (bi *BoostIndexer) process(ctx context.Context) error {
 	head, err := bi.rpc.GetHead()
 	if err != nil {
 		return err
@@ -432,63 +324,33 @@ func (bi *BoostIndexer) process() error {
 		return errors.Errorf("Invalid chain_id: %s (state) != %s (head)", bi.state.ChainID, head.ChainID)
 	}
 
-	logger.Info().Str("network", bi.Network.String()).Msgf("Current node state: %d", head.Level)
-	logger.Info().Str("network", bi.Network.String()).Msgf("Current indexer state: %d", bi.state.Level)
+	logger.Info().Str("network", bi.Network.String()).Msgf("Current node state: %7d", head.Level)
+	logger.Info().Str("network", bi.Network.String()).Msgf("Current indexer state: %7d", bi.state.Level)
 
 	if head.Level > bi.state.Level {
-		levels := make([]int64, 0)
-		if bi.boost {
-			levels, err = bi.getBoostBlocks(head)
-			if err != nil {
-				return err
-			}
-		} else {
-			for i := bi.state.Level + 1; i <= head.Level; i++ {
-				levels = append(levels, i)
-			}
-		}
-
-		logger.Info().Str("network", bi.Network.String()).Msgf("Found %d new levels", len(levels))
-
-		if err := bi.Index(levels); err != nil {
+		if err := bi.Index(ctx, head); err != nil {
 			if errors.Is(err, errBcdQuit) {
-				return nil
-			}
-			if errors.Is(err, errRollback) {
-				if !time.Now().Add(time.Duration(-5) * time.Minute).After(head.Timestamp) { // Check that node is out of sync
-					if err := bi.Rollback(); err != nil {
-						return err
-					}
-				}
 				return nil
 			}
 			return err
 		}
 
-		if bi.boost {
-			bi.boost = false
-		}
 		logger.Info().Str("network", bi.Network.String()).Msg("Synced")
 		return nil
 	} else if head.Level < bi.state.Level {
-		if err := bi.Rollback(); err != nil {
+		if err := bi.Rollback(ctx); err != nil {
 			return err
 		}
 	}
 
 	return errSameLevel
 }
-
-func (bi *BoostIndexer) createBlock(head noderpc.Header, tx *gorm.DB) error {
-	proto, err := bi.CachedProtocolByHash(bi.Network, head.Protocol)
-	if err != nil {
-		return err
-	}
+func (bi *BoostIndexer) createBlock(head noderpc.Header, tx pg.DBI) error {
 	newBlock := block.Block{
 		Network:     bi.Network,
 		Hash:        head.Hash,
 		Predecessor: head.Predecessor,
-		ProtocolID:  proto.ID,
+		ProtocolID:  bi.currentProtocol.ID,
 		ChainID:     head.ChainID,
 		Level:       head.Level,
 		Timestamp:   head.Timestamp,
@@ -501,30 +363,25 @@ func (bi *BoostIndexer) createBlock(head noderpc.Header, tx *gorm.DB) error {
 	return nil
 }
 
-func (bi *BoostIndexer) getDataFromBlock(head noderpc.Header) (*parsers.Result, error) {
+func (bi *BoostIndexer) getDataFromBlock(block *Block) (*parsers.Result, error) {
 	result := parsers.NewResult()
-	if head.Level <= 1 {
+	if block.Header.Level <= 1 {
 		return result, nil
 	}
-	opg, err := bi.rpc.GetOPG(head.Level)
+	parserParams, err := operations.NewParseParams(
+		bi.rpc,
+		bi.Context,
+		operations.WithProtocol(&bi.currentProtocol),
+		operations.WithHead(block.Header),
+		operations.WithNetwork(bi.Network),
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	for i := range opg {
-		parserParams, err := operations.NewParseParams(
-			bi.rpc,
-			bi.Context,
-			operations.WithConstants(*bi.currentProtocol.Constants),
-			operations.WithHead(head),
-			operations.WithIPFSGateways(bi.Config.IPFSGateways),
-			operations.WithNetwork(bi.Network),
-		)
-		if err != nil {
-			return nil, err
-		}
+	for i := range block.OPG {
 		parser := operations.NewGroup(parserParams)
-		opgResult, err := parser.Parse(opg[i])
+		opgResult, err := parser.Parse(block.OPG[i])
 		if err != nil {
 			return nil, err
 		}
@@ -534,7 +391,7 @@ func (bi *BoostIndexer) getDataFromBlock(head noderpc.Header) (*parsers.Result, 
 	return result, nil
 }
 
-func (bi *BoostIndexer) migrate(head noderpc.Header, tx *gorm.DB) error {
+func (bi *BoostIndexer) migrate(head noderpc.Header, tx pg.DBI) error {
 	if bi.currentProtocol.EndLevel == 0 && head.Level > 1 {
 		logger.Info().Str("network", bi.Network.String()).Msgf("Finalizing the previous protocol: %s", bi.currentProtocol.Alias)
 		bi.currentProtocol.EndLevel = head.Level - 1
@@ -584,12 +441,12 @@ func (bi *BoostIndexer) migrate(head noderpc.Header, tx *gorm.DB) error {
 	return nil
 }
 
-func (bi *BoostIndexer) implicitMigration(head noderpc.Header, tx *gorm.DB) error {
+func (bi *BoostIndexer) implicitMigration(head noderpc.Header, tx pg.DBI) error {
 	metadata, err := bi.rpc.GetBlockMetadata(head.Level)
 	if err != nil {
 		return err
 	}
-	implicitParser := migrations.NewImplicitParser(bi.Context, bi.Network, bi.rpc)
+	implicitParser := migrations.NewImplicitParser(bi.Context, bi.Network, bi.rpc, bi.currentProtocol)
 	implicitResult, err := implicitParser.Parse(metadata, head)
 	if err != nil {
 		return err
@@ -600,40 +457,56 @@ func (bi *BoostIndexer) implicitMigration(head noderpc.Header, tx *gorm.DB) erro
 	return nil
 }
 
-func (bi *BoostIndexer) standartMigration(newProtocol protocol.Protocol, head noderpc.Header, tx *gorm.DB) error {
+func (bi *BoostIndexer) standartMigration(newProtocol protocol.Protocol, head noderpc.Header, tx pg.DBI) error {
 	logger.Info().Str("network", bi.Network.String()).Msg("Try to find migrations...")
-	contracts, err := bi.Contracts.GetMany(map[string]interface{}{
-		"network": bi.Network,
-	})
-	if err != nil {
+	var contracts []contract.Contract
+	if err := bi.StorageDB.DB.Model((*contract.Contract)(nil)).
+		Relation("Account").
+		Where("contract.network = ?", bi.Network).
+		Where("tags & 4 = 0"). // except delegator contracts
+		Select(&contracts); err != nil {
 		return err
 	}
-	logger.Info().Str("network", bi.Network.String()).Msgf("Now %d contracts are indexed", len(contracts))
+	logger.Info().Str("network", bi.Network.String()).Msgf("Now %2d contracts are indexed", len(contracts))
 
-	migrationParser := migrations.NewMigrationParser(bi.Storage, bi.BigMapDiffs, bi.Config.SharePath)
+	migrationParser := migrations.NewMigrationParser(bi.Storage, bi.BigMapDiffs)
 
 	for i := range contracts {
-		logger.Info().Str("network", bi.Network.String()).Msgf("Migrate %s...", contracts[i].Address)
-		script, err := bi.rpc.GetScriptJSON(contracts[i].Address, newProtocol.StartLevel)
+		logger.Info().Str("network", bi.Network.String()).Msgf("Migrate %s...", contracts[i].Account.Address)
+		script, err := bi.rpc.GetScriptJSON(contracts[i].Account.Address, newProtocol.StartLevel)
 		if err != nil {
 			return err
 		}
 
-		if err := migrationParser.Parse(script, contracts[i], bi.currentProtocol, newProtocol, head.Timestamp, tx); err != nil {
+		if err := migrationParser.Parse(script, &contracts[i], bi.currentProtocol, newProtocol, head.Timestamp, tx); err != nil {
+			return err
+		}
+
+		if _, err := bi.StorageDB.DB.
+			Model(&contracts[i]).
+			Set("alpha_id = ?alpha_id, babylon_id = ?babylon_id").
+			WherePK().Update(&contracts[i]); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	_, err := bi.StorageDB.DB.Model((*contract.Contract)(nil)).
+		Set("babylon_id = alpha_id").
+		Where("network = ?", bi.Network).
+		Where("tags & 4 > 0"). // only delegator contracts
+		Update()
+	return err
 }
 
-func (bi *BoostIndexer) vestingMigration(head noderpc.Header, tx *gorm.DB) error {
+func (bi *BoostIndexer) vestingMigration(head noderpc.Header, tx pg.DBI) error {
 	addresses, err := bi.rpc.GetContractsByBlock(head.Level)
 	if err != nil {
 		return err
 	}
 
-	p := migrations.NewVestingParser(bi.Context, bi.Config.SharePath)
+	p := migrations.NewVestingParser(bi.Context)
+
+	result := parsers.NewResult()
 
 	for _, address := range addresses {
 		if !bcd.IsContract(address) {
@@ -645,14 +518,10 @@ func (bi *BoostIndexer) vestingMigration(head noderpc.Header, tx *gorm.DB) error
 			return err
 		}
 
-		parsed, err := p.Parse(data, head, bi.Network, address)
-		if err != nil {
-			return err
-		}
-		if err := parsed.Save(tx); err != nil {
+		if err := p.Parse(data, head, bi.Network, address, bi.currentProtocol, result); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return result.Save(tx)
 }

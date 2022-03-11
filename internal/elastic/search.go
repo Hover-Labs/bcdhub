@@ -76,18 +76,6 @@ func prepareSearchFilters(filters map[string]interface{}) (string, error) {
 				str = fmt.Sprintf("network:%s", val[0])
 			}
 			builder.WriteString(str)
-		case "languages":
-			val, ok := v.([]string)
-			if !ok {
-				return "", errors.Errorf("Invalid type for 'language' filter (wait []string): %T", v)
-			}
-			var str string
-			if len(val) > 1 {
-				str = fmt.Sprintf("language:(%s)", strings.Join(val, " OR "))
-			} else {
-				str = fmt.Sprintf("language:%s", val[0])
-			}
-			builder.WriteString(str)
 		default:
 			return "", errors.Errorf("Unknown search filter: %s", k)
 		}
@@ -207,16 +195,16 @@ func parseSearchGroupingResponse(response searchByTextResponse, offset int64) ([
 }
 
 var typeMap = map[string]string{
-	models.DocContracts:     "contract",
-	models.DocOperations:    "operation",
-	models.DocBigMapDiff:    "bigmapdiff",
-	models.DocTokenMetadata: "token_metadata",
-	models.DocTezosDomains:  "tezos_domain",
-	models.DocTZIP:          "tzip",
+	models.DocContracts:        "contract",
+	models.DocOperations:       "operation",
+	models.DocBigMapDiff:       "bigmapdiff",
+	models.DocTokenMetadata:    "token_metadata",
+	models.DocContractMetadata: "contract_metadata",
 }
 
 func prepare(searchString string, filters map[string]interface{}, fields []string) (search.Context, error) {
 	ctx := search.NewContext()
+	searchString = strings.Trim(searchString, "\"")
 
 	if search.IsPtrSearch(searchString) {
 		ctx.Text = strings.TrimPrefix(searchString, "ptr:")
@@ -250,7 +238,7 @@ func prepare(searchString string, filters map[string]interface{}, fields []strin
 func grouping(ctx search.Context, query Base) Base {
 	topHits := Item{
 		"top_hits": Item{
-			"size": 1,
+			"size": 3,
 			"sort": List{
 				Sort("_score", "desc"),
 			},
@@ -271,14 +259,12 @@ func grouping(ctx search.Context, query Base) Base {
 								return doc['hash.keyword'].value
 							} else if (doc['_index'].value == 'operations') {
 								return doc['hash.keyword'].value
-							} else if (doc['_index'].value == 'tzips') {
+							} else if (doc['_index'].value == 'contract_metadata') {
 								return doc['network.keyword'].value + '|' + doc['address.keyword'].value
 							} else if (doc['_index'].value == 'big_map_diffs') {
 								return doc['key_hash.keyword'].value
-							} else if (doc['_index'].value == 'tezos_domains') {
-								return doc['name.keyword'].value + '|' + doc['network.keyword'].value
 							} else if (doc['_index'].value == 'token_metadata') {
-								return doc['network.keyword'].value + doc['contract.keyword'].value + doc['token_id'].value
+								return doc['network.keyword'].value + '|' + doc['contract.keyword'].value + '|' + doc['token_id'].value
 							}`,
 						"size": defaultSize + ctx.Offset,
 						"order": List{

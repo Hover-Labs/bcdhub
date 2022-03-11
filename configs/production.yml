@@ -2,22 +2,27 @@ rpc:
   mainnet:
     uri: ${MAINNET_RPC_URI:-https://rpc.tzkt.io/mainnet}
     timeout: 20
-  florencenet:
-    uri: ${TESTNET_RPC_URI:-https://rpc.tzkt.io/florencenobanet}
-    timeout: 20
-  granadanet:
-    uri: ${NEXTNET_RPC_URI:-https://rpc.tzkt.io/granadanet}
+  hangzhou2net:
+    uri: https://rpc.tzkt.io/hangzhou2net
+    timeout: 20  
+  ithacanet:
+    uri: https://rpc.tzkt.io/ithacanet
     timeout: 20
 
 tzkt:
   mainnet:
-    uri: https://api.tzkt.io/v1/
-    services_uri: https://services.tzkt.io/v1/
-    base_uri: https://tzkt.io/
-    timeout: 20
+    uri: https://api.tzkt.io/v1
+  
+services:
+  mainnet:
+    mempool: https://mempool.dipdup.net/v1/graphql
+  hangzhou2net:
+    mempool: https://mempool.dipdup.net/v1/graphql 
+  ithacanet:
+    mempool: https://mempool.dipdup.net/v1/graphql 
 
 storage:
-  pg: "host=${DB_HOSTNAME:-db} port=5432 user=${POSTGRES_USER} dbname=indexer password=${POSTGRES_PASSWORD} sslmode=disable"
+  pg: "host=${DB_HOSTNAME:-db} port=5432 user=${POSTGRES_USER} dbname=${POSTGRES_DB:-indexer} password=${POSTGRES_PASSWORD} sslmode=disable"
   elastic:
     - http://${ELASTIC_HOSTNAME:-elastic}:9200
     - http://${ELASTIC_HOSTNAME:-elastic}:9200
@@ -35,12 +40,6 @@ base_url: https://better-call.dev
 
 ipfs:
   - ${SANDBOX_IPFS_GATEWAY:-https://ipfs.baking-bad.org}
-#  - https://dweb.link
-#  - https://ipfs.io
-
-domains:
-   edo2net: KT1KP2Yy6MNkYKkHqroGBZ7KFN5NdNfnUHHv
-#  mainnet: KT1GBZmSxmnKJXGMdMLbugPfLyUPmuLSMwKS
 
 api:
   project_name: api
@@ -54,29 +53,38 @@ api:
     ga_enabled: true
     mempool_enabled: true
     sandbox_mode: false
+    rpc:
+      mainnet: https://rpc.tzkt.io/mainnet
+      hangzhou2net: https://rpc.tzkt.io/hangzhou2net
   networks:
     - mainnet
-    - florencenet
-    - granadanet
-  pinata:
-    key: ${PINATA_KEY}
-    secret_key: ${PINATA_SECRET_KEY}
-    timeout_seconds: 10
+    - hangzhou2net
+    - ithacanet
+  connections:
+    max: 50
+    idle: 10
 
 indexer:
   project_name: indexer
   sentry_enabled: true
   skip_delegator_blocks: false
+  offchain_base_url: ${OFFCHAIN_BASE_URL}
+  cache: true
   networks:
     mainnet:
-      boost: tzkt
-    florencenet:
-    granadanet:
+    hangzhou2net:
+    ithacanet:
+  connections:
+    max: 5
+    idle: 5
 
 metrics:
   project_name: metrics
   sentry_enabled: true
   cache_aliases_seconds: 30
+  connections:
+    max: 20
+    idle: 20
 
 scripts:
   aws:
@@ -86,9 +94,8 @@ scripts:
     secret_access_key: ${AWS_SECRET_ACCESS_KEY}
   networks:
     - mainnet
-    - edo2net
-    - florencenet
-    - granadanet
-
-graphql:
-  db: "host=${DB_HOSTNAME} port=5432 user=graphql dbname=indexer password=${POSTGRES_GRAPHQL} sslmode=disable"
+    - hangzhou2net
+    - ithacanet
+  connections:
+    max: 5
+    idle: 5

@@ -21,23 +21,21 @@ type Scorable interface {
 	Parse(highlight map[string][]string, data []byte) (*Item, error)
 }
 
-// Indices - list of indices availiable to search
+// Indices - list of indices available to search
 var Indices = []string{
 	models.DocContracts,
 	models.DocOperations,
 	models.DocBigMapDiff,
 	models.DocTokenMetadata,
-	models.DocTZIP,
-	models.DocTezosDomains,
+	models.DocContractMetadata,
 }
 
 var scorables = map[string]Scorable{
-	models.DocContracts:     &Contract{},
-	models.DocOperations:    &Operation{},
-	models.DocBigMapDiff:    &BigMapDiff{},
-	models.DocTokenMetadata: &Token{},
-	models.DocTZIP:          &Metadata{},
-	models.DocTezosDomains:  &Domain{},
+	models.DocContracts:        &Contract{},
+	models.DocOperations:       &Operation{},
+	models.DocBigMapDiff:       &BigMapDiff{},
+	models.DocTokenMetadata:    &Token{},
+	models.DocContractMetadata: &Metadata{},
 }
 
 // ScoreInfo -

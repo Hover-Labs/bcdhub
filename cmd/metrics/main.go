@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
@@ -32,10 +32,9 @@ func main() {
 	}
 
 	ctx = config.NewContext(
-		config.WithStorage(cfg.Storage, cfg.Metrics.ProjectName, 0),
+		config.WithStorage(cfg.Storage, cfg.Metrics.ProjectName, 0, cfg.Metrics.Connections.Open, cfg.Metrics.Connections.Idle),
 		config.WithRPC(cfg.RPC),
 		config.WithSearch(cfg.Storage),
-		config.WithShare(cfg.SharePath),
 		config.WithDomains(cfg.Domains),
 		config.WithConfigCopy(cfg),
 	)
@@ -47,7 +46,6 @@ func main() {
 	}
 
 	workers := []services.Service{
-		services.NewView(ctx.StorageDB.DB, "head_stats", time.Hour),
 		services.NewUnknown(ctx, time.Minute*30, time.Second*2, -time.Hour*24),
 		services.NewStorageBased(
 			"projects",
@@ -70,17 +68,17 @@ func main() {
 			time.Second*15,
 			bulkSize,
 		),
-		// services.NewStorageBased(
-		// 	"tezos_domains",
-		// 	ctx.Services,
-		// 	services.NewTezosDomainHandler(ctx),
-		// 	time.Second*15,
-		// 	bulkSize,
-		// ),
 		services.NewStorageBased(
 			"operations",
 			ctx.Services,
 			services.NewOperationsHandler(ctx),
+			time.Second*15,
+			bulkSize,
+		),
+		services.NewStorageBased(
+			"contracts",
+			ctx.Services,
+			services.NewContractsHandler(ctx),
 			time.Second*15,
 			bulkSize,
 		),
@@ -93,20 +91,10 @@ func main() {
 		),
 	}
 
-	for network := range ctx.Config.Indexer.Networks {
-		for _, view := range []string{
-			"series_contract_by_month_",
-			"series_operation_by_month_",
-			"series_paid_storage_size_diff_by_month_",
-			"series_consumed_gas_by_month_",
-		} {
-			name := fmt.Sprintf("%s%s", view, network)
-			workers = append(workers, services.NewView(ctx.StorageDB.DB, name, time.Hour))
-		}
-	}
-
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+
+	cancelledContext, cancel := context.WithCancel(context.Background())
 
 	for i := range workers {
 		if err := workers[i].Init(); err != nil {
@@ -116,10 +104,11 @@ func main() {
 			logger.Err(err)
 			return
 		}
-		workers[i].Start()
+		workers[i].Start(cancelledContext)
 	}
 
 	<-signals
+	cancel()
 
 	if err := stop(workers, len(workers), signals); err != nil {
 		logger.Err(err)

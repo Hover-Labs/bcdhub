@@ -3,6 +3,7 @@ package operations
 import (
 	"github.com/baking-bad/bcdhub/internal/bcd/consts"
 	"github.com/baking-bad/bcdhub/internal/bcd/tezerrors"
+	"github.com/baking-bad/bcdhub/internal/models/account"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
 	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/baking-bad/bcdhub/internal/noderpc"
@@ -23,15 +24,19 @@ func parseOperationResult(data noderpc.Operation, tx *operation.Operation) {
 		tx.PaidStorageSizeDiff = *result.PaidStorageSizeDiff
 	}
 	if len(result.Originated) > 0 {
-		tx.Destination = result.Originated[0]
+		tx.Destination = account.Account{
+			Network: tx.Network,
+			Address: result.Originated[0],
+			Type:    types.AccountTypeContract,
+		}
 	}
 
 	tx.AllocatedDestinationContract = data.Kind == consts.Origination
 	if result.AllocatedDestinationContract != nil {
 		tx.AllocatedDestinationContract = *result.AllocatedDestinationContract
 	}
-	errs, err := tezerrors.ParseArray(result.Errors)
-	if err == nil {
+
+	if errs, err := tezerrors.ParseArray(result.Errors); err == nil {
 		tx.Errors = errs
 	}
 }

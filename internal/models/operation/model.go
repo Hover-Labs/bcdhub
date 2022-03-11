@@ -6,65 +6,68 @@ import (
 	"github.com/baking-bad/bcdhub/internal/bcd"
 	"github.com/baking-bad/bcdhub/internal/bcd/ast"
 	"github.com/baking-bad/bcdhub/internal/bcd/tezerrors"
+	"github.com/baking-bad/bcdhub/internal/models/account"
+	"github.com/baking-bad/bcdhub/internal/models/bigmapaction"
 	"github.com/baking-bad/bcdhub/internal/models/bigmapdiff"
 	"github.com/baking-bad/bcdhub/internal/models/protocol"
 	"github.com/baking-bad/bcdhub/internal/models/transfer"
 	"github.com/baking-bad/bcdhub/internal/models/types"
-	"github.com/lib/pq"
+	"github.com/go-pg/pg/v10"
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // Operation -
 type Operation struct {
-	ID int64 `json:"-"`
+	// nolint
+	tableName struct{} `pg:"operations"`
 
-	ContentIndex int64 `json:"content_index,omitempty" gorm:",default:0"`
-	Level        int64 `json:"level"`
-	Counter      int64 `json:"counter,omitempty" gorm:"index:opg_idx"`
-	Fee          int64 `json:"fee,omitempty"`
-	GasLimit     int64 `json:"gas_limit,omitempty"`
-	StorageLimit int64 `json:"storage_limit,omitempty"`
-	Amount       int64 `json:"amount,omitempty"`
+	ID                                 int64
+	ContentIndex                       int64         `pg:",use_zero"`
+	Level                              int64         `pg:",use_zero"`
+	Counter                            int64         `pg:",use_zero"`
+	Fee                                int64         `pg:",use_zero"`
+	GasLimit                           int64         `pg:",use_zero"`
+	StorageLimit                       int64         `pg:",use_zero"`
+	Amount                             int64         `pg:",use_zero"`
+	ConsumedGas                        int64         `pg:",use_zero"`
+	StorageSize                        int64         `pg:",use_zero"`
+	PaidStorageSizeDiff                int64         `pg:",use_zero"`
+	Burned                             int64         `pg:",use_zero"`
+	AllocatedDestinationContractBurned int64         `pg:",use_zero"`
+	ProtocolID                         int64         `pg:",type:SMALLINT"`
+	Network                            types.Network `pg:",type:SMALLINT"`
+	Tags                               types.Tags    `pg:",use_zero"`
+	Nonce                              *int64
 
-	ConsumedGas                        int64 `json:"consumed_gas,omitempty"`
-	StorageSize                        int64 `json:"storage_size,omitempty"`
-	PaidStorageSizeDiff                int64 `json:"paid_storage_size_diff,omitempty"`
-	Burned                             int64 `json:"burned,omitempty"`
-	AllocatedDestinationContractBurned int64 `json:"allocated_destination_contract_burned,omitempty"`
+	InitiatorID   int64
+	Initiator     account.Account `pg:",rel:has-one"`
+	SourceID      int64
+	Source        account.Account `pg:",rel:has-one"`
+	DestinationID int64
+	Destination   account.Account `pg:",rel:has-one"`
+	DelegateID    int64
+	Delegate      account.Account `pg:",rel:has-one"`
 
-	Nonce      *int64        `json:"nonce,omitempty" gorm:"index:opg_idx"`
-	Network    types.Network `json:"network" gorm:"type:SMALLINT"`
-	ProtocolID int64         `json:"protocol" gorm:"type:SMALLINT"`
-	Hash       string        `json:"hash" gorm:"index:opg_idx;index:operations_hash_idx"`
+	Timestamp time.Time
+	Status    types.OperationStatus `pg:",type:SMALLINT"`
+	Kind      types.OperationKind   `pg:",type:SMALLINT"`
 
-	Timestamp       time.Time             `json:"timestamp"`
-	Status          types.OperationStatus `json:"status" gorm:"type:SMALLINT"`
-	Kind            types.OperationKind   `json:"kind" gorm:"type:SMALLINT"`
-	Initiator       string                `json:"initiator"`
-	Source          string                `json:"source" gorm:"index:source_idx"`
-	Destination     string                `json:"destination,omitempty" gorm:"index:destination_idx"`
-	Delegate        string                `json:"delegate,omitempty"`
-	Entrypoint      string                `json:"entrypoint,omitempty"`
-	Parameters      []byte                `json:"parameters,omitempty"`
-	DeffatedStorage []byte                `json:"deffated_storage"`
+	Entrypoint      types.NullString `pg:",type:text"`
+	Hash            string
+	Parameters      []byte
+	DeffatedStorage []byte
+	Script          []byte `pg:"-"`
 
-	Tags types.Tags `json:"tags,omitempty" gorm:"default:0"`
+	Errors tezerrors.Errors `pg:",type:bytea"`
 
-	Script []byte `json:"-"  gorm:"-"`
+	AST *ast.Script `pg:"-"`
 
-	Errors           tezerrors.Errors `json:"errors,omitempty" gorm:"type:bytes"`
-	ParameterStrings pq.StringArray   `json:"parameter_strings,omitempty" gorm:"type:text[]"`
-	StorageStrings   pq.StringArray   `json:"storage_strings,omitempty" gorm:"type:text[]"`
+	Transfers     []*transfer.Transfer         `pg:"rel:has-many"`
+	BigMapDiffs   []*bigmapdiff.BigMapDiff     `pg:"rel:has-many"`
+	BigMapActions []*bigmapaction.BigMapAction `pg:"rel:has-many"`
 
-	AllocatedDestinationContract bool `json:"allocated_destination_contract,omitempty"`
-	Internal                     bool `json:"internal" gorm:",default:false"`
-
-	AST *ast.Script `json:"-" gorm:"-"`
-
-	Transfers   []*transfer.Transfer     `json:"-"`
-	BigMapDiffs []*bigmapdiff.BigMapDiff `json:"-"`
+	AllocatedDestinationContract bool `pg:",use_zero"`
+	Internal                     bool `pg:",use_zero"`
 }
 
 // GetID -
@@ -78,10 +81,9 @@ func (o *Operation) GetIndex() string {
 }
 
 // Save -
-func (o *Operation) Save(tx *gorm.DB) error {
-	return tx.Clauses(clause.OnConflict{
-		UpdateAll: true,
-	}).Save(o).Error
+func (o *Operation) Save(tx pg.DBI) error {
+	_, err := tx.Model(o).Returning("id").Insert()
+	return err
 }
 
 // LogFields -
@@ -119,7 +121,7 @@ func (o *Operation) SetBurned(constants protocol.Constants) {
 
 // IsEntrypoint -
 func (o *Operation) IsEntrypoint(entrypoint string) bool {
-	return o.Entrypoint == entrypoint
+	return o.Entrypoint.EqualString(entrypoint)
 }
 
 // IsOrigination -
@@ -139,19 +141,19 @@ func (o *Operation) IsApplied() bool {
 
 // IsCall -
 func (o *Operation) IsCall() bool {
-	return bcd.IsContract(o.Destination) && len(o.Parameters) > 0
+	return bcd.IsContract(o.Destination.Address) && len(o.Parameters) > 0
 }
 
 // EmptyTransfer -
 func (o Operation) EmptyTransfer() *transfer.Transfer {
 	return &transfer.Transfer{
 		Network:     o.Network,
-		Contract:    o.Destination,
+		Contract:    o.Destination.Address,
 		Status:      o.Status,
 		Timestamp:   o.Timestamp,
 		Level:       o.Level,
 		Initiator:   o.Source,
-		Entrypoint:  o.Entrypoint,
+		Entrypoint:  o.Entrypoint.String(),
 		Amount:      decimal.Zero,
 		OperationID: o.ID,
 	}
@@ -159,13 +161,13 @@ func (o Operation) EmptyTransfer() *transfer.Transfer {
 
 // Result -
 type Result struct {
-	Status                       string             `json:"-"`
-	ConsumedGas                  int64              `json:"consumed_gas,omitempty"`
-	StorageSize                  int64              `json:"storage_size,omitempty"`
-	PaidStorageSizeDiff          int64              `json:"paid_storage_size_diff,omitempty"`
-	AllocatedDestinationContract bool               `json:"allocated_destination_contract,omitempty"`
-	Originated                   string             `json:"-"`
-	Errors                       []*tezerrors.Error `json:"-"`
+	Status                       string
+	ConsumedGas                  int64
+	StorageSize                  int64
+	PaidStorageSizeDiff          int64
+	AllocatedDestinationContract bool
+	Originated                   string
+	Errors                       []*tezerrors.Error
 }
 
 // Stats -
@@ -176,8 +178,8 @@ type Stats struct {
 
 // Pageable -
 type Pageable struct {
-	Operations []Operation `json:"operations"`
-	LastID     string      `json:"last_id"`
+	Operations []Operation
+	LastID     string
 }
 
 // TokenMethodUsageStats -

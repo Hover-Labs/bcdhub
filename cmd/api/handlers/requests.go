@@ -93,15 +93,14 @@ type cursorRequest struct {
 }
 
 type searchRequest struct {
-	Text      string `form:"q" binding:"required,search"`
-	Fields    string `form:"f,omitempty"`
-	Networks  string `form:"n,omitempty"`
-	Offset    uint   `form:"o,omitempty"`
-	DateFrom  uint   `form:"s,omitempty"`
-	DateTo    uint   `form:"e,omitempty"`
-	Grouping  uint   `form:"g,omitempty"`
-	Indices   string `form:"i,omitempty"`
-	Languages string `form:"l,omitempty"`
+	Text     string `form:"q" binding:"required,search"`
+	Fields   string `form:"f,omitempty"`
+	Networks string `form:"n,omitempty"`
+	Offset   uint   `form:"o,omitempty"`
+	DateFrom uint   `form:"s,omitempty"`
+	DateTo   uint   `form:"e,omitempty"`
+	Grouping uint   `form:"g,omitempty"`
+	Indices  string `form:"i,omitempty"`
 }
 
 type sameContractRequest struct {
@@ -161,13 +160,6 @@ type getSeriesRequest struct {
 	Name    string `form:"name" binding:"oneof=contract operation paid_storage_size_diff consumed_gas volume users token_volume" example:"contract"`
 	Period  string `form:"period" binding:"oneof=all year month week day hour" example:"year"`
 	Address string `form:"address,omitempty" binding:"omitempty"`
-}
-
-func (req getSeriesRequest) isCached() bool {
-	if req.Address != "" {
-		return false
-	}
-	return req.Period == "month" && (req.Name == "contract" || req.Name == "operation" || req.Name == "paid_storage_size_diff" || req.Name == "consumed_gas")
 }
 
 type getBySlugRequest struct {
@@ -263,15 +255,6 @@ type byTokenIDRequest struct {
 	TokenID *uint64 `form:"token_id" binding:"min=0"`
 }
 
-type resolveDomainRequest struct {
-	Name    string `form:"name" binding:"omitempty"`
-	Address string `form:"address" binding:"omitempty"`
-}
-
-type metadataRequest struct {
-	Hash string `json:"hash" binding:"required"`
-}
-
 type executeViewRequest struct {
 	Data           map[string]interface{} `json:"data" binding:"required"`
 	Name           string                 `json:"name" binding:"required"`
@@ -313,4 +296,14 @@ type tokenMetadataRequest struct {
 
 type tokensCountByContractRequest struct {
 	HideEmpty bool `form:"hide_empty" binding:"omitempty"`
+}
+
+type getGlobalConstantRequest struct {
+	Address string `uri:"address" binding:"required,global_constant"`
+	Network string `uri:"network" binding:"required,network"`
+}
+
+// NetworkID -
+func (req getGlobalConstantRequest) NetworkID() types.Network {
+	return types.NewNetwork(req.Network)
 }

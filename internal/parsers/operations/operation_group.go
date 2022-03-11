@@ -1,8 +1,6 @@
 package operations
 
 import (
-	"github.com/pkg/errors"
-
 	"github.com/baking-bad/bcdhub/internal/bcd"
 	"github.com/baking-bad/bcdhub/internal/bcd/consts"
 	"github.com/baking-bad/bcdhub/internal/helpers"
@@ -21,7 +19,7 @@ func NewGroup(params *ParseParams) Group {
 }
 
 // Parse -
-func (opg Group) Parse(data noderpc.OperationGroup) (*parsers.Result, error) {
+func (opg Group) Parse(data noderpc.LightOperationGroup) (*parsers.Result, error) {
 	result := parsers.NewResult()
 
 	opg.hash = data.Hash
@@ -30,16 +28,35 @@ func (opg Group) Parse(data noderpc.OperationGroup) (*parsers.Result, error) {
 	for idx, item := range data.Contents {
 		opg.contentIdx = int64(idx)
 
-		contentParser := NewContent(opg.ParseParams)
-		contentResult, err := contentParser.Parse(item)
-		if err != nil {
+		if !opg.needParse(item) {
+			continue
+		}
+
+		var operation noderpc.Operation
+		if err := json.Unmarshal(item.Raw, &operation); err != nil {
 			return nil, err
 		}
-		result.Merge(contentResult)
+
+		contentParser := NewContent(opg.ParseParams)
+		if err := contentParser.Parse(operation, result); err != nil {
+			return nil, err
+		}
 		contentParser.clear()
 	}
 
 	return result, nil
+}
+
+func (Group) needParse(item noderpc.LightOperation) bool {
+	var destination string
+	if item.Destination != nil {
+		destination = *item.Destination
+	}
+	prefixCondition := bcd.IsContract(item.Source) || bcd.IsContract(destination)
+	transactionCondition := item.Kind == consts.Transaction && prefixCondition
+	originationCondition := (item.Kind == consts.Origination || item.Kind == consts.OriginationNew)
+	registerGlobalConstantCondition := item.Kind == consts.RegisterGlobalConstant
+	return originationCondition || transactionCondition || registerGlobalConstantCondition
 }
 
 // Content -
@@ -53,70 +70,49 @@ func NewContent(params *ParseParams) Content {
 }
 
 // Parse -
-func (content Content) Parse(data noderpc.Operation) (*parsers.Result, error) {
-	if !content.needParse(data) {
-		return nil, nil
-	}
-	result := parsers.NewResult()
-
+func (content Content) Parse(data noderpc.Operation, result *parsers.Result) error {
 	switch data.Kind {
 	case consts.Origination, consts.OriginationNew:
-		originationResult, err := NewOrigination(content.ParseParams).Parse(data)
-		if err != nil {
-			return nil, err
+		if err := NewOrigination(content.ParseParams).Parse(data, result); err != nil {
+			return err
 		}
-		result.Merge(originationResult)
 	case consts.Transaction:
-		txResult, err := NewTransaction(content.ParseParams).Parse(data)
-		if err != nil {
-			return nil, err
+		if err := NewTransaction(content.ParseParams).Parse(data, result); err != nil {
+			return err
 		}
-		result.Merge(txResult)
+	case consts.RegisterGlobalConstant:
+		if err := NewRegisterGlobalConstant(content.ParseParams).Parse(data, result); err != nil {
+			return err
+		}
 	default:
-		return nil, errors.Errorf("Invalid operation kind: %s", data.Kind)
+		return nil
 	}
 
-	internalResult, err := content.parseInternal(data)
-	if err != nil {
-		return nil, err
+	if err := content.parseInternal(data, result); err != nil {
+		return err
 	}
-	result.Merge(internalResult)
 
-	return result, nil
+	return nil
 }
 
-func (content Content) needParse(item noderpc.Operation) bool {
-	var destination string
-	if item.Destination != nil {
-		destination = *item.Destination
-	}
-	prefixCondition := bcd.IsContract(item.Source) || bcd.IsContract(destination)
-	transactionCondition := item.Kind == consts.Transaction && prefixCondition
-	originationCondition := (item.Kind == consts.Origination || item.Kind == consts.OriginationNew) && item.Script != nil
-	return originationCondition || transactionCondition
-}
-
-func (content Content) parseInternal(data noderpc.Operation) (*parsers.Result, error) {
+func (content Content) parseInternal(data noderpc.Operation, result *parsers.Result) error {
 	if data.Metadata == nil {
-		return nil, nil
+		return nil
 	}
 	internals := data.Metadata.Internal
 	if internals == nil {
 		internals = data.Metadata.InternalOperations
 		if internals == nil {
-			return nil, nil
+			return nil
 		}
 	}
 
-	result := parsers.NewResult()
 	for i := range internals {
-		parsedModels, err := content.Parse(internals[i])
-		if err != nil {
-			return nil, err
+		if err := content.Parse(internals[i], result); err != nil {
+			return err
 		}
-		result.Merge(parsedModels)
 	}
-	return result, nil
+	return nil
 }
 
 func (content *Content) clear() {

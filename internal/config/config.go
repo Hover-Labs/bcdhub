@@ -20,55 +20,58 @@ const (
 
 // Config -
 type Config struct {
-	RPC          map[string]RPCConfig  `yaml:"rpc"`
-	TzKT         map[string]TzKTConfig `yaml:"tzkt"`
-	Storage      StorageConfig         `yaml:"storage"`
-	Sentry       SentryConfig          `yaml:"sentry"`
-	SharePath    string                `yaml:"share_path"`
-	BaseURL      string                `yaml:"base_url"`
-	IPFSGateways []string              `yaml:"ipfs"`
-	Domains      TezosDomainsConfig    `yaml:"domains"`
+	RPC          map[string]RPCConfig     `yaml:"rpc"`
+	TzKT         map[string]TzKTConfig    `yaml:"tzkt"`
+	Services     map[string]ServiceConfig `yaml:"services"`
+	Storage      StorageConfig            `yaml:"storage"`
+	Sentry       SentryConfig             `yaml:"sentry"`
+	SharePath    string                   `yaml:"share_path"`
+	BaseURL      string                   `yaml:"base_url"`
+	IPFSGateways []string                 `yaml:"ipfs"`
+	Domains      TezosDomainsConfig       `yaml:"domains"`
 
 	API APIConfig `yaml:"api"`
 
 	Indexer struct {
-		Networks map[string]struct {
-			Boost string `yaml:"boost"`
-		} `yaml:"networks"`
-		ProjectName   string `yaml:"project_name"`
-		SentryEnabled bool   `yaml:"sentry_enabled"`
-
-		SkipDelegatorBlocks bool `yaml:"skip_delegator_blocks"`
+		Networks        map[string]struct{} `yaml:"networks"`
+		ProjectName     string              `yaml:"project_name"`
+		SentryEnabled   bool                `yaml:"sentry_enabled"`
+		Cache           bool                `yaml:"cache"`
+		Connections     Connections         `yaml:"connections"`
+		OffchainBaseURL string              `yaml:"offchain_base_url"`
 	} `yaml:"indexer"`
 
 	Metrics struct {
-		ProjectName         string `yaml:"project_name"`
-		SentryEnabled       bool   `yaml:"sentry_enabled"`
-		CacheAliasesSeconds int    `yaml:"cache_aliases_seconds"`
+		ProjectName         string      `yaml:"project_name"`
+		SentryEnabled       bool        `yaml:"sentry_enabled"`
+		CacheAliasesSeconds int         `yaml:"cache_aliases_seconds"`
+		Connections         Connections `yaml:"connections"`
 	} `yaml:"metrics"`
 
 	Scripts struct {
-		AWS      AWSConfig `yaml:"aws"`
-		Networks []string  `yaml:"networks"`
+		AWS         AWSConfig   `yaml:"aws"`
+		Networks    []string    `yaml:"networks"`
+		Connections Connections `yaml:"connections"`
 	} `yaml:"scripts"`
-
-	GraphQL struct {
-		DB string `yaml:"db"`
-	} `yaml:"graphql"`
 }
 
 // RPCConfig -
 type RPCConfig struct {
 	URI     string `yaml:"uri"`
 	Timeout int    `yaml:"timeout"`
+	Cache   string `yaml:"cache"`
 }
 
 // TzKTConfig -
 type TzKTConfig struct {
-	URI         string `yaml:"uri"`
-	ServicesURI string `yaml:"services_uri"`
-	BaseURI     string `yaml:"base_uri"`
-	Timeout     int    `yaml:"timeout"`
+	URI     string `yaml:"uri"`
+	BaseURI string `yaml:"base_uri"`
+	Timeout int    `yaml:"timeout"`
+}
+
+// ServiceConfig -
+type ServiceConfig struct {
+	MempoolURI string `yaml:"mempool"`
 }
 
 // StorageConfig -
@@ -113,9 +116,10 @@ type OAuthConfig struct {
 
 // FrontendConfig -
 type FrontendConfig struct {
-	GaEnabled      bool `yaml:"ga_enabled"`
-	MempoolEnabled bool `yaml:"mempool_enabled"`
-	SandboxMode    bool `yaml:"sandbox_mode"`
+	GaEnabled      bool              `yaml:"ga_enabled"`
+	MempoolEnabled bool              `yaml:"mempool_enabled"`
+	SandboxMode    bool              `yaml:"sandbox_mode"`
+	RPC            map[string]string `yaml:"rpc"`
 }
 
 // SeedConfig -
@@ -154,8 +158,8 @@ type APIConfig struct {
 	Frontend      FrontendConfig `yaml:"frontend"`
 	Seed          SeedConfig     `yaml:"seed"`
 	Networks      []string       `yaml:"networks"`
-	Pinata        PinataConfig   `yaml:"pinata"`
 	PageSize      uint64         `yaml:"page_size"`
+	Connections   Connections    `yaml:"connections"`
 }
 
 // SentryConfig -
@@ -169,11 +173,10 @@ type SentryConfig struct {
 // TezosDomainsConfig -
 type TezosDomainsConfig map[string]string
 
-// PinataConfig -
-type PinataConfig struct {
-	Key            string `yaml:"key"`
-	SecretKey      string `yaml:"secret_key"`
-	TimeoutSeconds int    `yaml:"timeout_seconds"`
+// Connections -
+type Connections struct {
+	Open int `yaml:"open"`
+	Idle int `yaml:"idle"`
 }
 
 // LoadDefaultConfig -

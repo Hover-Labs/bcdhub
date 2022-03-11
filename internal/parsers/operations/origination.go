@@ -1,17 +1,17 @@
 package operations
 
 import (
-	"github.com/baking-bad/bcdhub/internal/bcd"
 	"github.com/baking-bad/bcdhub/internal/events"
 	"github.com/baking-bad/bcdhub/internal/logger"
+	"github.com/baking-bad/bcdhub/internal/models/account"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
 	tbModel "github.com/baking-bad/bcdhub/internal/models/tokenbalance"
 	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/baking-bad/bcdhub/internal/noderpc"
 	"github.com/baking-bad/bcdhub/internal/parsers"
+	"github.com/baking-bad/bcdhub/internal/parsers/contract_metadata/tokens"
 	"github.com/baking-bad/bcdhub/internal/parsers/ledger"
 	"github.com/baking-bad/bcdhub/internal/parsers/transfer"
-	"github.com/baking-bad/bcdhub/internal/parsers/tzip/tokens"
 	"github.com/pkg/errors"
 )
 
@@ -25,68 +25,72 @@ func NewOrigination(params *ParseParams) Origination {
 	return Origination{params}
 }
 
-// Parse -
-func (p Origination) Parse(data noderpc.Operation) (*parsers.Result, error) {
-	result := parsers.NewResult()
+var delegatorContract = []byte(`{"code":[{"prim":"parameter","args":[{"prim":"or","args":[{"prim":"lambda","args":[{"prim":"unit"},{"prim":"list","args":[{"prim":"operation"}]}],"annots":["%do"]},{"prim":"unit","annots":["%default"]}]}]},{"prim":"storage","args":[{"prim":"key_hash"}]},{"prim":"code","args":[[[[{"prim":"DUP"},{"prim":"CAR"},{"prim":"DIP","args":[[{"prim":"CDR"}]]}]],{"prim":"IF_LEFT","args":[[{"prim":"PUSH","args":[{"prim":"mutez"},{"int":"0"}]},{"prim":"AMOUNT"},[[{"prim":"COMPARE"},{"prim":"EQ"}],{"prim":"IF","args":[[],[[{"prim":"UNIT"},{"prim":"FAILWITH"}]]]}],[{"prim":"DIP","args":[[{"prim":"DUP"}]]},{"prim":"SWAP"}],{"prim":"IMPLICIT_ACCOUNT"},{"prim":"ADDRESS"},{"prim":"SENDER"},[[{"prim":"COMPARE"},{"prim":"EQ"}],{"prim":"IF","args":[[],[[{"prim":"UNIT"},{"prim":"FAILWITH"}]]]}],{"prim":"UNIT"},{"prim":"EXEC"},{"prim":"PAIR"}],[{"prim":"DROP"},{"prim":"NIL","args":[{"prim":"operation"}]},{"prim":"PAIR"}]]}]]}],"storage":{"bytes":"0079943a60100e0394ac1c8f6ccfaeee71ec9c2d94"}}`)
 
-	proto, err := p.ctx.CachedProtocolByHash(p.network, p.head.Protocol)
-	if err != nil {
-		return nil, err
+// Parse -
+func (p Origination) Parse(data noderpc.Operation, result *parsers.Result) error {
+	source := account.Account{
+		Network: p.network,
+		Address: data.Source,
+		Type:    types.NewAccountType(data.Source),
 	}
 
 	origination := operation.Operation{
 		Network:      p.network,
 		Hash:         p.hash,
-		ProtocolID:   proto.ID,
+		ProtocolID:   p.protocol.ID,
 		Level:        p.head.Level,
 		Timestamp:    p.head.Timestamp,
 		Kind:         types.NewOperationKind(data.Kind),
-		Initiator:    data.Source,
-		Source:       data.Source,
+		Initiator:    source,
+		Source:       source,
 		Fee:          data.Fee,
 		Counter:      data.Counter,
 		GasLimit:     data.GasLimit,
 		StorageLimit: data.StorageLimit,
 		Amount:       *data.Balance,
-		Delegate:     data.Delegate,
+		Delegate: account.Account{
+			Network: p.network,
+			Address: data.Delegate,
+			Type:    types.NewAccountType(data.Delegate),
+		},
 		Parameters:   data.Parameters,
 		Nonce:        data.Nonce,
 		ContentIndex: p.contentIdx,
 		Script:       data.Script,
 	}
 
+	if origination.Script == nil {
+		origination.Script = delegatorContract
+	}
+
 	p.fillInternal(&origination)
 
 	parseOperationResult(data, &origination)
 
-	origination.SetBurned(p.constants)
+	origination.SetBurned(*p.protocol.Constants)
 
 	p.stackTrace.Add(origination)
 
 	if origination.IsApplied() {
 		if err := p.appliedHandler(data, &origination, result); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
 	result.Operations = append(result.Operations, &origination)
 
-	return result, nil
+	return nil
 }
 
 func (p Origination) appliedHandler(item noderpc.Operation, origination *operation.Operation, result *parsers.Result) error {
 	if origination == nil || result == nil {
 		return nil
 	}
-	if !bcd.IsContract(origination.Destination) || !origination.IsApplied() {
-		return nil
-	}
 
-	contractResult, err := p.contractParser.Parse(origination)
-	if err != nil {
+	if err := p.contractParser.Parse(origination, p.protocol.SymLink, result); err != nil {
 		return err
 	}
-	result.Contracts = append(result.Contracts, contractResult.Contracts...)
 
 	if err := setTags(p.ctx, result.Contracts[0], origination); err != nil {
 		return err
@@ -100,7 +104,7 @@ func (p Origination) appliedHandler(item noderpc.Operation, origination *operati
 		result.Merge(storageResult)
 	}
 
-	ledgerResult, err := ledger.New(p.ctx.TokenBalances).Parse(origination, p.stackTrace)
+	ledgerResult, err := ledger.New(p.ctx.TokenBalances, p.ctx.Accounts).Parse(origination, p.stackTrace)
 	if err != nil {
 		return err
 	}
@@ -108,9 +112,11 @@ func (p Origination) appliedHandler(item noderpc.Operation, origination *operati
 		result.TokenBalances = append(result.TokenBalances, ledgerResult.TokenBalances...)
 	}
 
-	if err := p.executeInitialStorageEvent(item.Script, origination, result); err != nil {
-		if !errors.Is(err, tokens.ErrNoMetadataKeyInStorage) {
-			logger.Err(err)
+	if origination.Network == types.Mainnet {
+		if err := p.executeInitialStorageEvent(item.Script, origination, result); err != nil {
+			if !errors.Is(err, tokens.ErrNoMetadataKeyInStorage) {
+				logger.Err(err)
+			}
 		}
 	}
 
@@ -134,25 +140,26 @@ func (p Origination) executeInitialStorageEvent(raw []byte, origination *operati
 	if origination == nil || result == nil || origination.Tags.Has(types.LedgerTag) {
 		return nil
 	}
-	tzip, err := p.ctx.CachedContractMetadata(origination.Network, origination.Destination)
+
+	contractEvents, err := p.ctx.Cache.Events(origination.Network, origination.Destination.Address)
 	if err != nil {
 		if p.ctx.Storage.IsRecordNotFound(err) {
 			return nil
 		}
 		return err
 	}
-	if tzip == nil || len(tzip.Events) == 0 {
+	if len(contractEvents) == 0 {
 		return nil
 	}
 
-	for i := range tzip.Events {
-		for j := range tzip.Events[i].Implementations {
-			impl := tzip.Events[i].Implementations[j]
+	for i := range contractEvents {
+		for j := range contractEvents[i].Implementations {
+			impl := contractEvents[i].Implementations[j]
 			if impl.MichelsonInitialStorageEvent == nil || impl.MichelsonInitialStorageEvent.Empty() {
 				continue
 			}
 
-			event, err := events.NewMichelsonInitialStorage(impl, tzip.Events[i].Name)
+			event, err := events.NewMichelsonInitialStorage(impl, contractEvents[i].Name)
 			if err != nil {
 				return err
 			}
@@ -174,17 +181,17 @@ func (p Origination) executeInitialStorageEvent(raw []byte, origination *operati
 			balances, err := events.Execute(p.rpc, event, events.Context{
 				Network:                  origination.Network,
 				Parameters:               storageType,
-				Source:                   origination.Source,
-				Initiator:                origination.Initiator,
+				Source:                   origination.Source.Address,
+				Initiator:                origination.Initiator.Address,
 				Amount:                   origination.Amount,
-				HardGasLimitPerOperation: p.constants.HardGasLimitPerOperation,
+				HardGasLimitPerOperation: p.protocol.Constants.HardGasLimitPerOperation,
 				ChainID:                  p.head.ChainID,
 			})
 			if err != nil {
 				return err
 			}
 
-			res, err := transfer.NewDefaultBalanceParser(p.ctx.TokenBalances).Parse(balances, *origination)
+			res, err := transfer.NewDefaultBalanceParser(p.ctx.TokenBalances, p.ctx.Accounts).Parse(balances, *origination)
 			if err != nil {
 				return err
 			}
@@ -195,10 +202,14 @@ func (p Origination) executeInitialStorageEvent(raw []byte, origination *operati
 
 			for i := range balances {
 				result.TokenBalances = append(result.TokenBalances, &tbModel.TokenBalance{
-					Network:  tzip.Network,
-					Address:  balances[i].Address,
+					Network: origination.Network,
+					Account: account.Account{
+						Address: balances[i].Address,
+						Network: origination.Network,
+						Type:    types.NewAccountType(balances[i].Address),
+					},
 					TokenID:  balances[i].TokenID,
-					Contract: tzip.Address,
+					Contract: origination.Destination.Address,
 					Balance:  balances[i].Value,
 				})
 

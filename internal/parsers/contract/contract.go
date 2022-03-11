@@ -1,6 +1,11 @@
 package contract
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+
+	"github.com/baking-bad/bcdhub/internal/bcd"
 	astContract "github.com/baking-bad/bcdhub/internal/bcd/contract"
 	"github.com/baking-bad/bcdhub/internal/config"
 	"github.com/baking-bad/bcdhub/internal/models/contract"
@@ -12,37 +17,18 @@ import (
 
 // Parser -
 type Parser struct {
-	scriptSaver ScriptSaver
-	ctx         *config.Context
+	ctx *config.Context
 }
 
 // NewParser -
-func NewParser(ctx *config.Context, opts ...ParserOption) *Parser {
-	parser := &Parser{ctx: ctx}
-	for i := range opts {
-		opts[i](parser)
-	}
-
-	return parser
-}
-
-// ParserOption -
-type ParserOption func(p *Parser)
-
-// WithShareDir -
-func WithShareDir(dir string) ParserOption {
-	return func(p *Parser) {
-		if dir == "" {
-			return
-		}
-		p.scriptSaver = NewFileScriptSaver(dir)
-	}
+func NewParser(ctx *config.Context) *Parser {
+	return &Parser{ctx: ctx}
 }
 
 // Parse -
-func (p *Parser) Parse(operation *operation.Operation) (*parsers.Result, error) {
+func (p *Parser) Parse(operation *operation.Operation, symLink string, result *parsers.Result) error {
 	if !operation.IsOrigination() {
-		return nil, errors.Errorf("Invalid operation kind in computeContractMetrics: %s", operation.Kind)
+		return errors.Errorf("invalid operation kind in computeContractMetrics: %s", operation.Kind)
 	}
 
 	contract := contract.Contract{
@@ -50,69 +36,110 @@ func (p *Parser) Parse(operation *operation.Operation) (*parsers.Result, error) 
 		Level:      operation.Level,
 		Timestamp:  operation.Timestamp,
 		Manager:    operation.Source,
-		Address:    operation.Destination,
+		Account:    operation.Destination,
 		Delegate:   operation.Delegate,
 		LastAction: operation.Timestamp,
 	}
 
-	if err := p.computeMetrics(operation, &contract); err != nil {
-		return nil, err
+	if err := p.computeMetrics(operation, symLink, &contract); err != nil {
+		return err
 	}
-
-	result := parsers.NewResult()
 	result.Contracts = append(result.Contracts, &contract)
-
-	return result, nil
+	return nil
 }
 
-func (p *Parser) computeMetrics(operation *operation.Operation, c *contract.Contract) error {
+func (p *Parser) computeMetrics(operation *operation.Operation, symLink string, c *contract.Contract) error {
 	script, err := astContract.NewParser(operation.Script)
 	if err != nil {
-		return errors.Errorf("astContract.NewParser: %v", err)
+		return errors.Wrap(err, "astContract.NewParser")
 	}
-	if err := script.Parse(); err != nil {
-		return err
-	}
-	operation.Script = script.CodeRaw
 	operation.AST = script.Code
 
-	c.Language = script.Language
-	c.Hash = script.Hash
-	c.FailStrings = script.FailStrings.Values()
-	c.Annotations = script.Annotations.Values()
-	c.Tags = types.NewTags(script.Tags.Values())
-	c.Hardcoded = script.HardcodedAddresses.Values()
-	c.FingerprintCode = script.Fingerprint.Code
-	c.FingerprintParameter = script.Fingerprint.Parameter
-	c.FingerprintStorage = script.Fingerprint.Storage
-
-	params, err := script.Code.Parameter.ToTypedAST()
+	contractScript, err := p.ctx.Scripts.ByHash(script.Hash)
 	if err != nil {
-		return err
-	}
-	c.Entrypoints = params.GetEntrypoints()
+		if !p.ctx.Storage.IsRecordNotFound(err) {
+			return err
+		}
+		var s bcd.RawScript
+		if err := json.Unmarshal(script.CodeRaw, &s); err != nil {
+			return err
+		}
 
-	if script.IsUpgradable() {
-		c.Tags.Set(types.UpgradableTag)
+		constants, err := script.FindConstants()
+		if err != nil {
+			return errors.Wrap(err, "script.FindConstants")
+		}
+
+		if len(constants) > 0 {
+			globalConstants, err := p.ctx.GlobalConstants.All(c.Network, constants...)
+			if err != nil {
+				return err
+			}
+			contractScript.Constants = globalConstants
+			p.replaceConstants(&contractScript, operation)
+
+			script, err = astContract.NewParser(operation.Script)
+			if err != nil {
+				return errors.Wrap(err, "astContract.NewParser")
+			}
+			operation.AST = script.Code
+		}
+
+		if err := script.Parse(); err != nil {
+			return err
+		}
+
+		params, err := script.Code.Parameter.ToTypedAST()
+		if err != nil {
+			return err
+		}
+
+		operation.Script = script.CodeRaw
+		contractScript = contract.Script{
+			Hash:                 script.Hash,
+			Code:                 s.Code,
+			Parameter:            s.Parameter,
+			Storage:              s.Storage,
+			Views:                s.Views,
+			FingerprintParameter: script.Fingerprint.Parameter,
+			FingerprintCode:      script.Fingerprint.Code,
+			FingerprintStorage:   script.Fingerprint.Storage,
+			FailStrings:          script.FailStrings.Values(),
+			Annotations:          script.Annotations.Values(),
+			Tags:                 types.NewTags(script.Tags.Values()),
+			Hardcoded:            script.HardcodedAddresses.Values(),
+			Entrypoints:          params.GetEntrypoints(),
+		}
+
+		switch symLink {
+		case bcd.SymLinkAlpha:
+			c.Alpha = contractScript
+		case bcd.SymLinkBabylon:
+			c.Babylon = contractScript
+		}
+	} else {
+		switch symLink {
+		case bcd.SymLinkAlpha:
+			c.AlphaID = contractScript.ID
+			c.Alpha = contractScript
+		case bcd.SymLinkBabylon:
+			c.BabylonID = contractScript.ID
+			c.Babylon = contractScript
+		}
 	}
 
-	c.ProjectID, err = p.ctx.Contracts.GetProjectIDByHash(c.Hash)
-	if err != nil {
-		return err
-	}
+	c.Tags = contractScript.Tags
 
-	proto, err := p.ctx.CachedProtocolByID(operation.Network, operation.ProtocolID)
-	if err != nil {
-		return err
-	}
-
-	if p.scriptSaver != nil {
-		return p.scriptSaver.Save(operation.Script, ScriptSaveContext{
-			Network: c.Network.String(),
-			Address: c.Address,
-			Hash:    c.Hash,
-			SymLink: proto.SymLink,
-		})
-	}
 	return nil
+}
+
+func (p *Parser) replaceConstants(c *contract.Script, operation *operation.Operation) {
+	pattern := `{"prim":"constant","args":[{"string":"%s"}]}`
+	for i := range c.Constants {
+		operation.Script = bytes.ReplaceAll(
+			operation.Script,
+			[]byte(fmt.Sprintf(pattern, c.Constants[i].Address)),
+			c.Constants[i].Value,
+		)
+	}
 }

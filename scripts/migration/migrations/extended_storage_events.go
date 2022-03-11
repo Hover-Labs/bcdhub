@@ -1,25 +1,27 @@
 package migrations
 
 import (
+	"context"
 	"errors"
 
+	"github.com/baking-bad/bcdhub/internal/bcd"
 	"github.com/baking-bad/bcdhub/internal/bcd/ast"
 	"github.com/baking-bad/bcdhub/internal/config"
-	"github.com/baking-bad/bcdhub/internal/fetch"
 	"github.com/baking-bad/bcdhub/internal/logger"
-	"github.com/baking-bad/bcdhub/internal/models"
+	"github.com/baking-bad/bcdhub/internal/models/bigmapdiff"
+	"github.com/baking-bad/bcdhub/internal/models/contract_metadata"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
 	"github.com/baking-bad/bcdhub/internal/models/transfer"
 	"github.com/baking-bad/bcdhub/internal/models/types"
-	"github.com/baking-bad/bcdhub/internal/models/tzip"
 	"github.com/baking-bad/bcdhub/internal/noderpc"
 	"github.com/baking-bad/bcdhub/internal/parsers/stacktrace"
 	transferParsers "github.com/baking-bad/bcdhub/internal/parsers/transfer"
+	"github.com/go-pg/pg/v10"
 )
 
 // ExtendedStorageEvents -
 type ExtendedStorageEvents struct {
-	contracts map[string]string
+	contracts map[string]types.Network
 }
 
 // Key -
@@ -34,146 +36,150 @@ func (m *ExtendedStorageEvents) Description() string {
 
 // Do - migrate function
 func (m *ExtendedStorageEvents) Do(ctx *config.Context) error {
-	m.contracts = make(map[string]string)
-	tzips, err := ctx.TZIP.GetWithEvents(0)
+	m.contracts = make(map[string]types.Network)
+	tzips, err := ctx.ContractMetadata.GetWithEvents(0)
 	if err != nil {
 		return err
 	}
-
 	logger.Info().Msgf("Found %d tzips", len(tzips))
 
 	logger.Info().Msg("Execution events...")
-	inserted := make([]models.Model, 0)
-	deleted := make([]models.Model, 0)
-	newTransfers := make([]*transfer.Transfer, 0)
-	for i := range tzips {
-		for _, event := range tzips[i].Events {
-			for _, impl := range event.Implementations {
-				if impl.MichelsonExtendedStorageEvent == nil || impl.MichelsonExtendedStorageEvent.Empty() {
-					continue
+	return ctx.StorageDB.DB.RunInTransaction(context.Background(), func(tx *pg.Tx) error {
+		for i := range tzips {
+			protocol, err := ctx.Protocols.Get(tzips[i].Network, "", -1)
+			if err != nil {
+				if !ctx.Storage.IsRecordNotFound(err) {
+					return err
 				}
-				logger.Info().Msgf("%s...", tzips[i].Address)
-
-				protocol, err := ctx.Protocols.Get(tzips[i].Network, "", -1)
+				protocol.Hash = bcd.GetCurrentProtocol()
+				protocol.SymLink, err = bcd.GetProtoSymLink(protocol.Hash)
 				if err != nil {
 					return err
 				}
-				rpc, err := ctx.GetRPC(tzips[i].Network)
-				if err != nil {
-					return err
-				}
+			}
+			rpc, err := ctx.GetRPC(tzips[i].Network)
+			if err != nil {
+				return err
+			}
+			parser, err := transferParsers.NewParser(rpc, ctx.ContractMetadata, ctx.Blocks, ctx.TokenBalances, ctx.Accounts,
+				transferParsers.WithNetwork(tzips[i].Network),
+				transferParsers.WithGasLimit(protocol.Constants.HardGasLimitPerOperation),
+			)
+			if err != nil {
+				return err
+			}
+			script, err := ctx.Contracts.Script(tzips[i].Network, tzips[i].Address, protocol.SymLink)
+			if err != nil {
+				return err
+			}
 
-				operations, err := m.getOperations(ctx, tzips[i], impl)
-				if err != nil {
-					return err
-				}
+			destination, err := ctx.Accounts.Get(tzips[i].Network, tzips[i].Address)
+			if err != nil {
+				return err
+			}
 
-				if len(operations) == 0 {
-					continue
-				}
-
-				script, err := fetch.ContractBySymLink(tzips[i].Network, tzips[i].Address, protocol.SymLink, ctx.SharePath)
-				if err != nil {
-					return err
-				}
-
-				for _, op := range operations {
-					op.Script = script
-					tree, err := ast.NewScriptWithoutCode(script)
-					if err != nil {
-						return err
+			for _, event := range tzips[i].Events {
+				for _, impl := range event.Implementations {
+					if impl.MichelsonExtendedStorageEvent == nil || impl.MichelsonExtendedStorageEvent.Empty() {
+						continue
 					}
-					op.AST = tree
+					logger.Info().Msgf("%s...", tzips[i].Address)
 
-					st := stacktrace.New()
-					if err := st.Fill(ctx.Operations, op); err != nil {
-						return err
-					}
+					m.contracts[tzips[i].Address] = tzips[i].Network
 
-					parser, err := transferParsers.NewParser(rpc, ctx.TZIP, ctx.Blocks, ctx.TokenBalances,
-						ctx.SharePath,
-						transferParsers.WithNetwork(tzips[i].Network),
-						transferParsers.WithGasLimit(protocol.Constants.HardGasLimitPerOperation),
-						transferParsers.WithStackTrace(st),
-					)
-					if err != nil {
-						return err
-					}
-
-					bmd, err := ctx.BigMapDiffs.GetForOperation(op.ID)
-					if err != nil {
-						if !ctx.Storage.IsRecordNotFound(err) {
-							return err
-						}
-					}
-					proto, err := ctx.CachedProtocolByID(operations[i].Network, operations[i].ProtocolID)
-					if err != nil {
-						return err
-					}
-					if err := parser.Parse(bmd, proto.Hash, &op); err != nil {
-						if errors.Is(err, noderpc.InvalidNodeResponse{}) {
-							logger.Err(err)
-							continue
-						}
-						return err
-					}
-					for _, t := range op.Transfers {
-						old, err := ctx.Transfers.Get(transfer.GetContext{
-							Network:     t.Network,
-							TokenID:     &t.TokenID,
-							OperationID: &op.ID,
-						})
+					var lastID int64
+					var end bool
+					for !end {
+						operations, err := m.getOperations(ctx, destination.ID, lastID, 10000, impl)
 						if err != nil {
 							return err
 						}
-						for j := range old.Transfers {
-							deleted = append(deleted, &old.Transfers[j])
-							m.contracts[old.Transfers[j].Contract] = old.Transfers[j].Network.String()
+
+						for _, op := range operations {
+							if lastID < op.ID {
+								lastID = op.ID
+							}
+
+							op.Script, err = script.Full()
+							if err != nil {
+								return err
+							}
+							op.AST, err = ast.NewScriptWithoutCode(op.Script)
+							if err != nil {
+								return err
+							}
+
+							st := stacktrace.New()
+							if err := st.Fill(ctx.Operations, op); err != nil {
+								return err
+							}
+							parser.SetStackTrace(st)
+
+							bmd, err := ctx.BigMapDiffs.GetForOperation(op.ID)
+							if err != nil {
+								if !ctx.Storage.IsRecordNotFound(err) {
+									return err
+								}
+							}
+							proto, err := ctx.Cache.ProtocolByID(op.Network, op.ProtocolID)
+							if err != nil {
+								return err
+							}
+
+							ptrsBmd := make([]*bigmapdiff.BigMapDiff, len(bmd))
+							for i := range bmd {
+								ptrsBmd[i] = &bmd[i]
+							}
+
+							if err := parser.Parse(ptrsBmd, proto.Hash, &op); err != nil {
+								if errors.Is(err, noderpc.InvalidNodeResponse{}) {
+									logger.Err(err)
+									continue
+								}
+								return err
+							}
+							for _, t := range op.Transfers {
+								if _, err := tx.Model((*transfer.Transfer)(nil)).
+									Where("network = ?", tzips[i].Network).
+									Where("token_id = ?", t.TokenID).
+									Where("operation_id = ?", op.ID).
+									Where("contract = ?", tzips[i].Address).
+									Delete(); err != nil {
+									return err
+								}
+							}
+							if len(op.Transfers) > 0 {
+								if _, err := tx.Model(&op.Transfers).Returning("id").Insert(); err != nil {
+									return err
+								}
+							}
 						}
-						inserted = append(inserted, t)
-						newTransfers = append(newTransfers, t)
-						m.contracts[t.Contract] = t.Network.String()
+						end = len(operations) < 10000
 					}
 				}
 			}
 		}
-	}
-	logger.Info().Msgf("Delete %d transfers", len(deleted))
-	if err := ctx.Storage.BulkDelete(deleted); err != nil {
-		return err
-	}
-
-	logger.Info().Msgf("Found %d transfers", len(inserted))
-
-	bu := transferParsers.UpdateTokenBalances(newTransfers)
-	for i := range bu {
-		inserted = append(inserted, bu[i])
-	}
-
-	return ctx.Storage.Save(inserted)
+		return nil
+	})
 }
 
-func (m *ExtendedStorageEvents) getOperations(ctx *config.Context, tzip tzip.TZIP, impl tzip.EventImplementation) ([]operation.Operation, error) {
+func (m *ExtendedStorageEvents) getOperations(ctx *config.Context, accountID int64, lastID int64, size int, impl contract_metadata.EventImplementation) ([]operation.Operation, error) {
 	operations := make([]operation.Operation, 0)
 
-	for i := range impl.MichelsonExtendedStorageEvent.Entrypoints {
-		ops, err := ctx.Operations.Get(map[string]interface{}{
-			"network":     tzip.Network,
-			"destination": tzip.Address,
-			"kind":        types.OperationKindTransaction,
-			"status":      types.OperationStatusApplied,
-			"entrypoint":  impl.MichelsonExtendedStorageEvent.Entrypoints[i],
-		}, 0, false)
-		if err != nil {
-			return nil, err
-		}
-		operations = append(operations, ops...)
+	query := ctx.StorageDB.DB.Model((*operation.Operation)(nil)).
+		Order("operation.id asc").
+		Where("destination_id = ?", accountID).
+		Where("kind = ?", types.OperationKindTransaction).
+		Where("status = ?", types.OperationStatusApplied).
+		WhereIn("entrypoint IN (?)", impl.MichelsonExtendedStorageEvent.Entrypoints)
+	if lastID > 0 {
+		query.Where("operation.id > ?", lastID)
 	}
-
-	return operations, nil
+	err := query.Limit(size).Relation("Destination").Relation("Source").Relation("Initiator").Select(&operations)
+	return operations, err
 }
 
 // AffectedContracts -
-func (m *ExtendedStorageEvents) AffectedContracts() map[string]string {
+func (m *ExtendedStorageEvents) AffectedContracts() map[string]types.Network {
 	return m.contracts
 }

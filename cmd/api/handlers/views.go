@@ -7,7 +7,7 @@ import (
 	"github.com/baking-bad/bcdhub/internal/bcd/ast"
 	"github.com/baking-bad/bcdhub/internal/bcd/base"
 	"github.com/baking-bad/bcdhub/internal/bcd/consts"
-	"github.com/baking-bad/bcdhub/internal/models/tzip"
+	"github.com/baking-bad/bcdhub/internal/models/contract_metadata"
 	"github.com/baking-bad/bcdhub/internal/views"
 	"github.com/gin-gonic/gin"
 )
@@ -38,8 +38,13 @@ func (ctx *Context) GetViewsSchema(c *gin.Context) {
 		return
 	}
 
-	tzip, err := ctx.TZIP.Get(req.NetworkID(), req.Address)
-	if ctx.handleError(c, err, 0) {
+	tzip, err := ctx.ContractMetadata.Get(req.NetworkID(), req.Address)
+	if err != nil {
+		if ctx.Storage.IsRecordNotFound(err) {
+			c.SecureJSON(http.StatusOK, []ViewSchema{})
+			return
+		}
+		ctx.handleError(c, err, 0)
 		return
 	}
 
@@ -63,20 +68,26 @@ func (ctx *Context) GetViewsSchema(c *gin.Context) {
 			}
 
 			tree, err := getViewTree(impl)
-			if ctx.handleError(c, err, 0) {
-				return
+			if err != nil {
+				schema.Error = err.Error()
+				schemas = append(schemas, schema)
+				continue
 			}
 			entrypoints, err := tree.GetEntrypointsDocs()
-			if ctx.handleError(c, err, 0) {
-				return
+			if err != nil {
+				schema.Error = err.Error()
+				schemas = append(schemas, schema)
+				continue
 			}
 			if len(entrypoints) != 1 {
 				continue
 			}
 			schema.Type = entrypoints[0].Type
 			schema.Schema, err = tree.ToJSONSchema()
-			if ctx.handleError(c, err, 0) {
-				return
+			if err != nil {
+				schema.Error = err.Error()
+				schemas = append(schemas, schema)
+				continue
 			}
 
 			schemas = append(schemas, schema)
@@ -116,12 +127,12 @@ func (ctx *Context) ExecuteView(c *gin.Context) {
 		return
 	}
 
-	state, err := ctx.CachedCurrentBlock(req.NetworkID())
+	state, err := ctx.Cache.CurrentBlock(req.NetworkID())
 	if ctx.handleError(c, err, 0) {
 		return
 	}
 
-	tzipValue, err := ctx.TZIP.Get(req.NetworkID(), req.Address)
+	tzipValue, err := ctx.ContractMetadata.Get(req.NetworkID(), req.Address)
 	if ctx.handleError(c, err, 0) {
 		return
 	}
@@ -131,7 +142,7 @@ func (ctx *Context) ExecuteView(c *gin.Context) {
 		return
 	}
 
-	var impl tzip.ViewImplementation
+	var impl contract_metadata.ViewImplementation
 	for _, view := range tzipValue.Views {
 		if view.Name != execView.Name {
 			continue
@@ -205,7 +216,7 @@ func (ctx *Context) ExecuteView(c *gin.Context) {
 	c.SecureJSON(http.StatusOK, miguel)
 }
 
-func getViewTree(impl tzip.ViewImplementation) (*ast.TypedAst, error) {
+func getViewTree(impl contract_metadata.ViewImplementation) (*ast.TypedAst, error) {
 	if !impl.MichelsonStorageView.IsParameterEmpty() {
 		return ast.NewTypedAstFromBytes(impl.MichelsonStorageView.Parameter)
 	}

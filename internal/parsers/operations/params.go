@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"github.com/baking-bad/bcdhub/internal/bcd"
 	"github.com/baking-bad/bcdhub/internal/config"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
 	"github.com/baking-bad/bcdhub/internal/models/protocol"
@@ -16,8 +17,6 @@ type ParseParams struct {
 	ctx *config.Context
 	rpc noderpc.INode
 
-	constants protocol.Constants
-
 	contractParser *contract.Parser
 	transferParser *transfer.Parser
 
@@ -25,29 +24,21 @@ type ParseParams struct {
 
 	stackTrace *stacktrace.StackTrace
 
-	ipfs []string
-
 	network    types.Network
 	hash       string
 	head       noderpc.Header
 	contentIdx int64
 	main       *operation.Operation
+	protocol   *protocol.Protocol
 }
 
 // ParseParamsOption -
 type ParseParamsOption func(*ParseParams)
 
-// WithIPFSGateways -
-func WithIPFSGateways(ipfs []string) ParseParamsOption {
+// WithProtocol -
+func WithProtocol(protocol *protocol.Protocol) ParseParamsOption {
 	return func(dp *ParseParams) {
-		dp.ipfs = ipfs
-	}
-}
-
-// WithConstants -
-func WithConstants(constants protocol.Constants) ParseParamsOption {
-	return func(dp *ParseParams) {
-		dp.constants = constants
+		dp.protocol = protocol
 	}
 }
 
@@ -97,23 +88,28 @@ func NewParseParams(rpc noderpc.INode, ctx *config.Context, opts ...ParseParamsO
 		opts[i](params)
 	}
 
+	if params.protocol == nil {
+		proto, err := ctx.Protocols.Get(params.network, bcd.GetCurrentProtocol(), 0)
+		if err != nil {
+			return nil, err
+		}
+		params.protocol = &proto
+	}
+
 	transferParser, err := transfer.NewParser(
 		rpc,
-		ctx.TZIP, ctx.Blocks, ctx.TokenBalances, ctx.SharePath,
+		ctx.ContractMetadata, ctx.Blocks, ctx.TokenBalances, ctx.Accounts,
 		transfer.WithStackTrace(params.stackTrace),
 		transfer.WithNetwork(params.network),
 		transfer.WithChainID(params.head.ChainID),
-		transfer.WithGasLimit(params.constants.HardGasLimitPerOperation),
+		transfer.WithGasLimit(params.protocol.Constants.HardGasLimitPerOperation),
 	)
 	if err != nil {
 		return nil, err
 	}
 	params.transferParser = transferParser
 
-	params.contractParser = contract.NewParser(
-		params.ctx,
-		contract.WithShareDir(ctx.SharePath),
-	)
+	params.contractParser = contract.NewParser(params.ctx)
 	storageParser, err := NewRichStorage(ctx.BigMapDiffs, rpc, params.head.Protocol)
 	if err != nil {
 		return nil, err

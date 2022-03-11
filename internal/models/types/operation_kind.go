@@ -1,7 +1,5 @@
 package types
 
-import "database/sql/driver"
-
 // OperationKind -
 type OperationKind int
 
@@ -16,6 +14,8 @@ func NewOperationKind(value string) OperationKind {
 		return OperationKindOriginationNew
 	case "delegation":
 		return OperationKindDelegation
+	case "register_global_constant":
+		return OperationKindRegisterGlobalConstant
 	default:
 		return 0
 	}
@@ -32,23 +32,17 @@ func (kind OperationKind) String() string {
 		return "origination_new"
 	case OperationKindDelegation:
 		return "delegation"
+	case OperationKindRegisterGlobalConstant:
+		return "register_global_constant"
 	default:
 		return ""
 	}
 }
-
-// Scan -
-func (kind *OperationKind) Scan(value interface{}) error {
-	*kind = OperationKind(value.(int64))
-	return nil
-}
-
-// Value -
-func (kind OperationKind) Value() (driver.Value, error) { return int(kind), nil }
 
 const (
 	OperationKindTransaction OperationKind = iota + 1
 	OperationKindOrigination
 	OperationKindOriginationNew
 	OperationKindDelegation
+	OperationKindRegisterGlobalConstant
 )

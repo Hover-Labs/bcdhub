@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/baking-bad/bcdhub/internal/models/contract"
+	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -62,8 +63,14 @@ func (ctx *Context) GetRandomContract(c *gin.Context) {
 	if err := c.BindQuery(&req); ctx.handleError(c, err, http.StatusBadRequest) {
 		return
 	}
+	networks := make([]types.Network, 0)
 
-	contract, err := ctx.Contracts.GetRandom(req.NetworkID())
+	network := req.NetworkID()
+	if network != types.Empty {
+		networks = append(networks, network)
+	}
+
+	contract, err := ctx.Contracts.GetRandom(networks...)
 	if err != nil {
 		if ctx.Storage.IsRecordNotFound(err) {
 			c.SecureJSON(http.StatusNoContent, gin.H{})
@@ -84,10 +91,7 @@ func (ctx *Context) contractPostprocessing(contract contract.Contract) (Contract
 	var res Contract
 	res.FromModel(contract)
 
-	res.Alias = ctx.CachedAlias(contract.Network, contract.Address)
-	res.DelegateAlias = ctx.CachedAlias(contract.Network, contract.Delegate)
-
-	if alias, err := ctx.TZIP.Get(contract.Network, contract.Address); err == nil {
+	if alias, err := ctx.ContractMetadata.Get(contract.Network, contract.Account.Address); err == nil {
 		res.Slug = alias.Slug
 	} else if !ctx.Storage.IsRecordNotFound(err) {
 		return res, err

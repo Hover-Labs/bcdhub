@@ -1,59 +1,64 @@
 package models
 
 import (
+	"github.com/baking-bad/bcdhub/internal/models/account"
 	"github.com/baking-bad/bcdhub/internal/models/bigmapaction"
 	"github.com/baking-bad/bcdhub/internal/models/bigmapdiff"
 	"github.com/baking-bad/bcdhub/internal/models/block"
 	"github.com/baking-bad/bcdhub/internal/models/contract"
+	cm "github.com/baking-bad/bcdhub/internal/models/contract_metadata"
 	"github.com/baking-bad/bcdhub/internal/models/dapp"
+	"github.com/baking-bad/bcdhub/internal/models/global_constant"
 	"github.com/baking-bad/bcdhub/internal/models/migration"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
 	"github.com/baking-bad/bcdhub/internal/models/protocol"
 	"github.com/baking-bad/bcdhub/internal/models/service"
-	"github.com/baking-bad/bcdhub/internal/models/tezosdomain"
 	"github.com/baking-bad/bcdhub/internal/models/tokenbalance"
 	"github.com/baking-bad/bcdhub/internal/models/tokenmetadata"
 	"github.com/baking-bad/bcdhub/internal/models/transfer"
-	"github.com/baking-bad/bcdhub/internal/models/tzip"
 )
 
 // Document names
 const (
-	DocBigMapActions = "big_map_actions"
-	DocBigMapDiff    = "big_map_diffs"
-	DocBigMapState   = "big_map_states"
-	DocBlocks        = "blocks"
-	DocContracts     = "contracts"
-	DocDApps         = "dapps"
-	DocMigrations    = "migrations"
-	DocOperations    = "operations"
-	DocProtocol      = "protocols"
-	DocServices      = "states"
-	DocTezosDomains  = "tezos_domains"
-	DocTokenBalances = "token_balances"
-	DocTokenMetadata = "token_metadata"
-	DocTransfers     = "transfers"
-	DocTZIP          = "tzips"
+	DocAccounts         = "accounts"
+	DocBigMapActions    = "big_map_actions"
+	DocBigMapDiff       = "big_map_diffs"
+	DocBigMapState      = "big_map_states"
+	DocBlocks           = "blocks"
+	DocContracts        = "contracts"
+	DocContractMetadata = "contract_metadata"
+	DocDApps            = "dapps"
+	DocGlobalConstants  = "global_constants"
+	DocMigrations       = "migrations"
+	DocOperations       = "operations"
+	DocProtocol         = "protocols"
+	DocServices         = "states"
+	DocScripts          = "scripts"
+	DocTokenBalances    = "token_balances"
+	DocTokenMetadata    = "token_metadata"
+	DocTransfers        = "transfers"
 )
 
 // AllDocuments - returns all document names
 func AllDocuments() []string {
 	return []string{
 		DocServices,
+		DocAccounts,
 		DocBigMapActions,
 		DocBigMapDiff,
 		DocBigMapState,
 		DocBlocks,
 		DocContracts,
 		DocDApps,
+		DocGlobalConstants,
 		DocMigrations,
 		DocOperations,
 		DocProtocol,
-		DocTezosDomains,
+		DocScripts,
 		DocTokenBalances,
 		DocTokenMetadata,
 		DocTransfers,
-		DocTZIP,
+		DocContractMetadata,
 	}
 }
 
@@ -63,17 +68,27 @@ func AllModels() []Model {
 		&service.State{},
 		&protocol.Protocol{},
 		&block.Block{},
-		&operation.Operation{},
+		&account.Account{},
 		&bigmapaction.BigMapAction{},
 		&bigmapdiff.BigMapDiff{},
 		&bigmapdiff.BigMapState{},
+		&transfer.Transfer{},
+		&operation.Operation{},
+		&global_constant.GlobalConstant{},
+		&contract.Script{},
+		&contract.ScriptConstants{},
 		&contract.Contract{},
 		&migration.Migration{},
-		&tezosdomain.TezosDomain{},
 		&tokenbalance.TokenBalance{},
 		&tokenmetadata.TokenMetadata{},
-		&transfer.Transfer{},
-		&tzip.TZIP{},
+		&cm.ContractMetadata{},
 		&dapp.DApp{},
+	}
+}
+
+// ManyToMany -
+func ManyToMany() []interface{} {
+	return []interface{}{
+		&contract.ScriptConstants{},
 	}
 }

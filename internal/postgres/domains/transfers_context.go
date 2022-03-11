@@ -1,27 +1,27 @@
 package domains
 
 import (
-	"fmt"
 	"strconv"
 
 	"github.com/baking-bad/bcdhub/internal/models/transfer"
 	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/baking-bad/bcdhub/internal/postgres/core"
-	"gorm.io/gorm"
+	"github.com/go-pg/pg/v10/orm"
 )
 
-func (storage *Storage) buildGetContext(query *gorm.DB, ctx transfer.GetContext, withSize bool) {
+func (storage *Storage) buildGetContext(query *orm.Query, ctx transfer.GetContext, withSize bool) {
 	if query == nil {
 		return
 	}
 
 	if ctx.Network != types.Empty {
-		query.Where("network = ?", ctx.Network)
+		query.Where("transfer.network = ?", ctx.Network)
 	}
-	if ctx.Address != "" {
-		query.Where(
-			storage.DB.Where("transfers.from = ?", ctx.Address).Or("transfers.to = ?", ctx.Address),
-		)
+	if ctx.AccountID > -1 {
+		query.WhereGroup(func(q *orm.Query) (*orm.Query, error) {
+			q = q.WhereOr("transfer.from_id = ?", ctx.AccountID).WhereOr("transfer.to_id = ?", ctx.AccountID)
+			return q, nil
+		})
 	}
 
 	switch {
@@ -36,15 +36,17 @@ func (storage *Storage) buildGetContext(query *gorm.DB, ctx transfer.GetContext,
 	if ctx.LastID != "" {
 		if id, err := strconv.ParseInt(ctx.LastID, 10, 64); err == nil {
 			if ctx.SortOrder == "asc" {
-				query.Where("id > ?", id)
+				query.Where("transfer.id > ?", id)
 			} else {
-				query.Where("id < ?", id)
+				query.Where("transfer.id < ?", id)
 			}
 		}
 	}
-	subQuery := core.OrStringArray(storage.DB, ctx.Contracts, "contract")
+	subQuery := core.OrStringArray(query, ctx.Contracts, "contract")
 	if subQuery != nil {
-		query.Where(subQuery)
+		query.WhereGroup(func(q *orm.Query) (*orm.Query, error) {
+			return subQuery, nil
+		})
 	}
 	if ctx.TokenID != nil {
 		query.Where("token_id = ?", *ctx.TokenID)
@@ -60,9 +62,11 @@ func (storage *Storage) buildGetContext(query *gorm.DB, ctx transfer.GetContext,
 			query.Offset(int(ctx.Offset))
 		}
 	}
-	if ctx.SortOrder == "asc" || ctx.SortOrder == "desc" {
-		query.Order(fmt.Sprintf("id %s", ctx.SortOrder))
-	} else {
-		query.Order("id desc")
+
+	switch ctx.SortOrder {
+	case "asc":
+		query.Order("transfer.id asc")
+	default:
+		query.Order("transfer.id desc")
 	}
 }

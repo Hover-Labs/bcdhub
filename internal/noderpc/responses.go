@@ -97,6 +97,7 @@ type Operation struct {
 	Metadata     *OperationMetadata `json:"metadata,omitempty"`
 	Result       *OperationResult   `json:"result,omitempty"`
 	Script       stdJSON.RawMessage `json:"script,omitempty"`
+	Value        stdJSON.RawMessage `json:"value,omitempty"`
 }
 
 // GetResult -
@@ -109,6 +110,31 @@ func (op Operation) GetResult() *OperationResult {
 	default:
 		return nil
 	}
+}
+
+// LightOperationGroup -
+type LightOperationGroup struct {
+	Protocol  string           `json:"protocol"`
+	ChainID   string           `json:"chain_id"`
+	Hash      string           `json:"hash"`
+	Branch    string           `json:"branch"`
+	Signature string           `json:"signature"`
+	Contents  []LightOperation `json:"contents"`
+}
+
+// LightOperation -
+type LightOperation struct {
+	Raw         stdJSON.RawMessage `json:"-"`
+	Kind        string             `json:"kind"`
+	Source      string             `json:"source"`
+	Destination *string            `json:"destination,omitempty"`
+}
+
+// UnmarshalJSON -
+func (op *LightOperation) UnmarshalJSON(data []byte) error {
+	op.Raw = data
+	type buf LightOperation
+	return json.Unmarshal(data, (*buf)(op))
 }
 
 // Script -
@@ -150,6 +176,7 @@ type OperationResult struct {
 	AllocatedDestinationContract *bool              `json:"allocated_destination_contract,omitempty"`
 	BigMapDiffs                  []BigMapDiff       `json:"big_map_diff,omitempty"`
 	Errors                       stdJSON.RawMessage `json:"errors,omitempty"`
+	GlobalAddress                string             `json:"global_address,omitempty"`
 }
 
 // BigMapDiff -

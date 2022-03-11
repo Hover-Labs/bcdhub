@@ -19,7 +19,6 @@ func (ctx *Context) handleError(c *gin.Context, err error, code int) bool {
 		err = errors.New("invalid authentication")
 	case 0:
 		code = ctx.getErrorCode(err)
-
 		if code == http.StatusInternalServerError {
 			if hub := sentrygin.GetHubFromContext(c); hub != nil {
 				hub.CaptureMessage(err.Error())
@@ -28,7 +27,7 @@ func (ctx *Context) handleError(c *gin.Context, err error, code int) bool {
 		}
 	}
 
-	c.AbortWithStatusJSON(code, Error{Message: err.Error()})
+	c.AbortWithStatusJSON(code, ctx.getErrorMessage(err))
 	return true
 }
 
@@ -37,4 +36,11 @@ func (ctx *Context) getErrorCode(err error) int {
 		return http.StatusNotFound
 	}
 	return http.StatusInternalServerError
+}
+
+func (ctx *Context) getErrorMessage(err error) Error {
+	if ctx.Storage.IsRecordNotFound(err) {
+		return Error{Message: "not found"}
+	}
+	return Error{Message: err.Error()}
 }

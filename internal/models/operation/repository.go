@@ -1,13 +1,16 @@
 package operation
 
-import "github.com/baking-bad/bcdhub/internal/models/types"
+import (
+	"github.com/baking-bad/bcdhub/internal/models/account"
+	"github.com/baking-bad/bcdhub/internal/models/types"
+)
 
 // Repository -
 type Repository interface {
-	GetByContract(network types.Network, address string, size uint64, filters map[string]interface{}) (Pageable, error)
-	GetStats(network types.Network, address string) (Stats, error)
-	// Last - returns last operation. TODO: change network and address.
-	Last(network types.Network, address string, indexedTime int64) (Operation, error)
+	GetByAccount(acc account.Account, size uint64, filters map[string]interface{}) (Pageable, error)
+	// Last -  get last operation by `filters` with not empty deffated_storage.
+	Last(filter map[string]interface{}, lastID int64) (Operation, error)
+	GetByHash(hash string) ([]Operation, error)
 
 	// GetOperations - get operation by `filter`. `Size` - if 0 - return all, else certain `size` operations.
 	// `Sort` - sort by time and content index by desc
@@ -18,4 +21,5 @@ type Repository interface {
 
 	GetDAppStats(network types.Network, addresses []string, period string) (DAppStats, error)
 	GetByIDs(ids ...int64) ([]Operation, error)
+	GetByID(id int64) (Operation, error)
 }

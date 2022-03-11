@@ -1,8 +1,9 @@
 package migrations
 
 import (
+	"context"
+
 	"github.com/baking-bad/bcdhub/internal/config"
-	"github.com/baking-bad/bcdhub/internal/fetch"
 	"github.com/baking-bad/bcdhub/internal/logger"
 	"github.com/baking-bad/bcdhub/internal/models"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
@@ -58,8 +59,7 @@ func (m *CreateTransfersTags) Do(ctx *config.Context) error {
 			return err
 		}
 
-		parser, err := transferParsers.NewParser(rpc, ctx.TZIP, ctx.Blocks, ctx.TokenBalances,
-			ctx.SharePath,
+		parser, err := transferParsers.NewParser(rpc, ctx.ContractMetadata, ctx.Blocks, ctx.TokenBalances, ctx.Accounts,
 			transferParsers.WithNetwork(operations[i].Network),
 			transferParsers.WithGasLimit(protocol.Constants.HardGasLimitPerOperation),
 			transferParsers.WithoutViews(),
@@ -67,14 +67,19 @@ func (m *CreateTransfersTags) Do(ctx *config.Context) error {
 		if err != nil {
 			return err
 		}
-		proto, err := ctx.CachedProtocolByID(operations[i].Network, operations[i].ProtocolID)
+		proto, err := ctx.Cache.ProtocolByID(operations[i].Network, operations[i].ProtocolID)
 		if err != nil {
 			return err
 		}
-		operations[i].Script, err = fetch.ContractBySymLink(operations[i].Network, operations[i].Destination, proto.SymLink, ctx.SharePath)
+		script, err := ctx.Contracts.Script(operations[i].Network, operations[i].Destination.Address, proto.SymLink)
 		if err != nil {
 			return err
 		}
+		operations[i].Script, err = script.Full()
+		if err != nil {
+			return err
+		}
+		operations[i].Script = script.Code
 
 		if err := parser.Parse(nil, proto.Hash, &operations[i]); err != nil {
 			return err
@@ -91,7 +96,7 @@ func (m *CreateTransfersTags) Do(ctx *config.Context) error {
 		result = append(result, balanceUpdates[i])
 	}
 
-	return ctx.Storage.Save(result)
+	return ctx.Storage.Save(context.Background(), result)
 }
 
 func (m *CreateTransfersTags) deleteTransfers(ctx *config.Context) (err error) {
@@ -114,9 +119,9 @@ func (m *CreateTransfersTags) deleteTransfers(ctx *config.Context) (err error) {
 func (m *CreateTransfersTags) getOperations(ctx *config.Context) ([]operation.Operation, error) {
 	filters := map[string]interface{}{}
 	if m.Network != "" {
-		filters["network"] = m.Network
+		filters["operation.network"] = m.Network
 		if m.Address != "" {
-			filters["destination"] = m.Address
+			filters["destination.address"] = m.Address
 		} else {
 			filters["entrypoint"] = "transfer"
 		}

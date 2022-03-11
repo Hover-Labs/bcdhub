@@ -7,17 +7,13 @@ import (
 	"github.com/baking-bad/bcdhub/internal/bcd/ast"
 	"github.com/baking-bad/bcdhub/internal/bcd/base"
 	"github.com/baking-bad/bcdhub/internal/bcd/types"
+	"github.com/baking-bad/bcdhub/internal/models/account"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
 	"github.com/baking-bad/bcdhub/internal/models/transfer"
 	modelTypes "github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 )
-
-func newDecimal(val string) decimal.Decimal {
-	i, _ := decimal.NewFromString(val)
-	return i
-}
 
 func TestMakeFa1_2Transfers(t *testing.T) {
 	tests := []struct {
@@ -37,9 +33,17 @@ func TestMakeFa1_2Transfers(t *testing.T) {
 			want: []*transfer.Transfer{
 				{
 					Network: modelTypes.Edo2net,
-					From:    "tz1grSQDByRpnVs7sPtaprNZRp531ZKz6Jmm",
-					To:      "tz1TGu6TN5GSez2ndXXeDX6LgUDvLzPLqgYV",
-					Amount:  newDecimal("100"),
+					From: account.Account{
+						Network: modelTypes.Edo2net,
+						Address: "tz1grSQDByRpnVs7sPtaprNZRp531ZKz6Jmm",
+						Type:    modelTypes.AccountTypeTz,
+					},
+					To: account.Account{
+						Network: modelTypes.Edo2net,
+						Address: "tz1TGu6TN5GSez2ndXXeDX6LgUDvLzPLqgYV",
+						Type:    modelTypes.AccountTypeTz,
+					},
+					Amount: decimal.RequireFromString("100"),
 				},
 			},
 		}, {
@@ -52,9 +56,17 @@ func TestMakeFa1_2Transfers(t *testing.T) {
 			want: []*transfer.Transfer{
 				{
 					Network: modelTypes.Mainnet,
-					From:    "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
-					To:      "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
-					Amount:  newDecimal("7874880"),
+					From: account.Account{
+						Network: modelTypes.Mainnet,
+						Address: "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
+						Type:    modelTypes.AccountTypeContract,
+					},
+					To: account.Account{
+						Network: modelTypes.Mainnet,
+						Address: "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
+						Type:    modelTypes.AccountTypeTz,
+					},
+					Amount: decimal.RequireFromString("7874880"),
 				},
 			},
 		}, {
@@ -88,9 +100,17 @@ func TestMakeFa1_2Transfers(t *testing.T) {
 			want: []*transfer.Transfer{
 				{
 					Network: modelTypes.Mainnet,
-					From:    "KT1ChJ6h8Crjdfds99DLpE5USynQTmCJtB3T",
-					To:      "tz1Mqnms73LqgBCYiM7e5k12VyWNQG8ytcGb",
-					Amount:  newDecimal("15019000009999999295"),
+					From: account.Account{
+						Network: modelTypes.Mainnet,
+						Address: "KT1ChJ6h8Crjdfds99DLpE5USynQTmCJtB3T",
+						Type:    modelTypes.AccountTypeContract,
+					},
+					To: account.Account{
+						Network: modelTypes.Mainnet,
+						Address: "tz1Mqnms73LqgBCYiM7e5k12VyWNQG8ytcGb",
+						Type:    modelTypes.AccountTypeTz,
+					},
+					Amount: decimal.RequireFromString("15019000009999999295"),
 				},
 			},
 		},

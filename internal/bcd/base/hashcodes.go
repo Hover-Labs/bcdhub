@@ -187,6 +187,13 @@ var codes = map[string]string{
 	"GET_AND_UPDATE":        "b5",
 	"MAP_CDR":               "b6",
 	"MAP_CAR":               "b7",
+	"constant":              "b8",
+	"chest":                 "b9",
+	"chest_key":             "ba",
+	"OPEN_CHEST":            "bb",
+	"VIEW":                  "bc",
+	"view":                  "bd",
+	"SUB_MUTEZ":             "be",
 }
 
 var regCodes = map[*regexp.Regexp]string{

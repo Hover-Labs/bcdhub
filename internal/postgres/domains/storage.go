@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/baking-bad/bcdhub/internal/models"
+	"github.com/baking-bad/bcdhub/internal/models/bigmapdiff"
 	"github.com/baking-bad/bcdhub/internal/models/domains"
 	"github.com/baking-bad/bcdhub/internal/models/transfer"
 	"github.com/baking-bad/bcdhub/internal/models/types"
@@ -22,7 +23,7 @@ func NewStorage(pg *core.Postgres) *Storage {
 
 var balanceQuery = `
 	select tb.network, tb.contract, tb.token_id, tb.balance, tm.symbol, tm.name, tm.decimals, tm.description, tm.artifact_uri, tm.display_uri, tm.external_uri, tm.thumbnail_uri, tm.is_transferable, tm.is_boolean_amount, tm.should_prefer_symbol, tm.tags, tm.creators, tm.formats, tm.extras  from (
-		(?)  as tb
+		(?) as tb
 		left join token_metadata as tm on tm.network  = tb.network and tm.token_id = tb.token_id and tm.contract = tb.contract
 	)
 `
@@ -39,37 +40,40 @@ func (storage *Storage) getPageSizeForBalances(size int64) int {
 }
 
 // TokenBalances -
-func (storage *Storage) TokenBalances(network types.Network, contract, address string, size, offset int64, sort string, hideZeroBalances bool) (domains.TokenBalanceResponse, error) {
+func (storage *Storage) TokenBalances(network types.Network, contract string, accountID int64, size, offset int64, sort string, hideZeroBalances bool) (domains.TokenBalanceResponse, error) {
 	response := domains.TokenBalanceResponse{
 		Balances: make([]domains.TokenBalance, 0),
 	}
 
-	query := storage.DB.Table(models.DocTokenBalances).Scopes(core.NetworkAndAddress(network, address))
+	query := storage.DB.Model().Table(models.DocTokenBalances).
+		Where("network = ?", network).
+		Where("account_id = ?", accountID)
 
 	if contract != "" {
 		query.Where("contract = ?", contract)
-	}
-
-	switch sort {
-	case "token_id":
-	case "balance":
-		sort = "balance desc, id"
-	default:
-		sort = "token_id"
 	}
 
 	if hideZeroBalances {
 		query.Where("balance != 0")
 	}
 
-	if err := query.Count(&response.Count).Error; err != nil {
+	if count, err := query.Count(); err != nil {
 		return response, err
+	} else {
+		response.Count = int64(count)
 	}
 
-	query.Limit(storage.getPageSizeForBalances(size)).Offset(int(offset)).Order(fmt.Sprintf("%s desc", sort))
+	query.Limit(storage.getPageSizeForBalances(size)).Offset(int(offset))
 
-	if err := storage.DB.Raw(balanceQuery, query).
-		Find(&response.Balances).Error; err != nil {
+	switch sort {
+	case "token_id":
+	case "balance":
+		query.Order("balance desc, id desc")
+	default:
+		query.Order("token_id desc")
+	}
+
+	if _, err := storage.DB.Query(&response.Balances, balanceQuery, query); err != nil {
 		return response, err
 	}
 
@@ -78,7 +82,7 @@ func (storage *Storage) TokenBalances(network types.Network, contract, address s
 
 var transfersQuery = `
 	select o.hash, o.nonce, o.counter, t.*, tm.symbol, tm.decimals, tm."name"  from (
-		(?)  as t
+		(?) as t
 		left join operations as o on o.id  = t.operation_id
 		left join token_metadata tm on tm.network = t.network and tm.contract = t.contract and tm.token_id = t.token_id
 	)
@@ -89,10 +93,10 @@ func (storage *Storage) Transfers(ctx transfer.GetContext) (domains.TransfersRes
 	response := domains.TransfersResponse{
 		Transfers: make([]domains.Transfer, 0),
 	}
-	query := storage.DB.Table(models.DocTransfers)
+	query := storage.DB.Model((*transfer.Transfer)(nil)).Relation("From").Relation("To").Relation("Initiator")
 	storage.buildGetContext(query, ctx, true)
 
-	if err := storage.DB.Raw(transfersQuery, query).Find(&response.Transfers).Error; err != nil {
+	if _, err := storage.DB.Query(&response.Transfers, transfersQuery, query); err != nil {
 		return response, err
 	}
 
@@ -101,10 +105,12 @@ func (storage *Storage) Transfers(ctx transfer.GetContext) (domains.TransfersRes
 	if ctx.Offset == 0 && size > received {
 		response.Total = int64(len(response.Transfers))
 	} else {
-		countQuery := storage.DB.Table(models.DocTransfers)
+		countQuery := storage.DB.Model((*transfer.Transfer)(nil))
 		storage.buildGetContext(countQuery, ctx, false)
-		if err := countQuery.Count(&response.Total).Error; err != nil {
+		if count, err := countQuery.Count(); err != nil {
 			return response, err
+		} else {
+			response.Total = int64(count)
 		}
 	}
 
@@ -116,11 +122,21 @@ func (storage *Storage) Transfers(ctx transfer.GetContext) (domains.TransfersRes
 
 // BigMapDiffs -
 func (storage *Storage) BigMapDiffs(lastID, size int64) (result []domains.BigMapDiff, err error) {
-	query := storage.DB.Table(models.DocBigMapDiff).Preload("Operation").Preload("Protocol").Order("id asc")
+	var ids []int64
+	query := storage.DB.Model((*bigmapdiff.BigMapDiff)(nil)).Column("id").Order("id asc")
 	if lastID > 0 {
-		query.Where("id > ?", lastID)
+		query.Where("big_map_diff.id > ?", lastID)
 	}
-	query.Limit(storage.GetPageSize(size))
-	err = query.Find(&result).Error
+	if err = query.Limit(storage.GetPageSize(size)).Select(&ids); err != nil {
+		return
+	}
+
+	if len(ids) == 0 {
+		return
+	}
+
+	err = storage.DB.Model((*domains.BigMapDiff)(nil)).WhereIn("big_map_diff.id IN (?)", ids).
+		Relation("Operation").Relation("Protocol").
+		Select(&result)
 	return
 }

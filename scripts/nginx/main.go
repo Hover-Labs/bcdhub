@@ -17,7 +17,7 @@ func main() {
 	}
 
 	ctx := config.NewContext(
-		config.WithStorage(cfg.Storage, "nginx", 0),
+		config.WithStorage(cfg.Storage, "nginx", 0, cfg.Scripts.Connections.Open, cfg.Scripts.Connections.Idle),
 		config.WithConfigCopy(cfg),
 	)
 	defer ctx.Close()
@@ -28,7 +28,7 @@ func main() {
 		return
 	}
 
-	aliases, err := ctx.TZIP.GetAliases(types.Mainnet)
+	aliases, err := ctx.ContractMetadata.GetAliases(types.Mainnet)
 	if err != nil {
 		logger.Err(err)
 		return

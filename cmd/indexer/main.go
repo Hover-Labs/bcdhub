@@ -1,9 +1,9 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/signal"
-	"runtime"
 	"sync"
 	"syscall"
 
@@ -26,19 +26,22 @@ func main() {
 		defer helpers.CatchPanicSentry()
 	}
 
-	indexers, err := indexer.CreateIndexers(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	internalCtx := config.NewContext(
+		config.WithConfigCopy(cfg),
+		config.WithStorage(cfg.Storage, "indexer", 10, cfg.Indexer.Connections.Open, cfg.Indexer.Connections.Idle),
+		config.WithSearch(cfg.Storage),
+	)
+	defer internalCtx.Close()
+
+	indexers, err := indexer.CreateIndexers(ctx, internalCtx, cfg)
 	if err != nil {
+		cancel()
 		logger.Err(err)
 		helpers.CatchErrorSentry(err)
 		return
 	}
-
-	countCPU := runtime.NumCPU()
-	if countCPU > len(indexers)+1 {
-		countCPU = len(indexers) + 1
-	}
-	logger.Warning().Msgf("Indexer started on %d CPU cores", countCPU)
-	runtime.GOMAXPROCS(countCPU)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
@@ -46,14 +49,12 @@ func main() {
 	var wg sync.WaitGroup
 	for i := range indexers {
 		wg.Add(1)
-		go indexers[i].Sync(&wg)
+		go indexers[i].Sync(ctx, &wg)
 	}
 
 	<-sigChan
+	cancel()
 
-	for i := range indexers {
-		go indexers[i].Stop()
-	}
 	wg.Wait()
 	logger.Info().Msg("Stopped")
 }

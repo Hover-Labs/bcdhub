@@ -32,7 +32,7 @@ func (ctx *Context) RunOperation(c *gin.Context) {
 
 	network := types.NewNetwork(req.Network)
 
-	state, err := ctx.CachedCurrentBlock(network)
+	state, err := ctx.Cache.CurrentBlock(network)
 	if ctx.handleError(c, err, 0) {
 		return
 	}
@@ -57,7 +57,7 @@ func (ctx *Context) RunOperation(c *gin.Context) {
 		return
 	}
 
-	response, err := rpc.RunOperation(
+	response, err := rpc.RunOperationLight(
 		state.ChainID,
 		state.Hash,
 		reqRunOp.Source,
@@ -85,7 +85,7 @@ func (ctx *Context) RunOperation(c *gin.Context) {
 	parserParams, err := operations.NewParseParams(
 		rpc,
 		ctx.Context,
-		operations.WithConstants(*state.Protocol.Constants),
+		operations.WithProtocol(&state.Protocol),
 		operations.WithHead(header),
 		operations.WithNetwork(network),
 	)
@@ -140,7 +140,7 @@ func (ctx *Context) RunCode(c *gin.Context) {
 		return
 	}
 
-	state, err := ctx.CachedCurrentBlock(req.NetworkID())
+	state, err := ctx.Cache.CurrentBlock(req.NetworkID())
 	if ctx.handleError(c, err, 0) {
 		return
 	}
@@ -324,7 +324,13 @@ func (ctx *Context) setSimulateStorageDiff(response noderpc.RunCodeResponse, pro
 	if err != nil {
 		return err
 	}
-	storageDiff, err := ctx.getStorageDiff(bmd, main.Destination, response.Storage, storageType, main)
+
+	destination, err := ctx.Accounts.Get(types.NewNetwork(main.Network), main.Destination)
+	if err != nil {
+		return err
+	}
+
+	storageDiff, err := ctx.getStorageDiff(destination.ID, bmd, response.Storage, storageType, main)
 	if err != nil {
 		return err
 	}

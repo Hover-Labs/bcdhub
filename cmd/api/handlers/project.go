@@ -97,16 +97,14 @@ func (ctx *Context) GetSimilarContracts(c *gin.Context) {
 	}
 	for i := range similar {
 		diff, err := ctx.getContractCodeDiff(
-			CodeDiffLeg{Address: contract.Address, Network: contract.Network},
-			CodeDiffLeg{Address: similar[i].Address, Network: similar[i].Network},
+			CodeDiffLeg{Address: contract.Account.Address, Network: contract.Network},
+			CodeDiffLeg{Address: similar[i].Account.Address, Network: similar[i].Network},
 		)
 		if ctx.handleError(c, err, 0) {
 			return
 		}
 		response.Contracts[i].FromModel(similar[i], diff)
-
-		response.Contracts[i].Alias = ctx.CachedAlias(similar[i].Network, similar[i].Address)
-		response.Contracts[i].DelegateAlias = ctx.CachedAlias(similar[i].Network, similar[i].Delegate)
+		response.Contracts[i].SimilarCount = int64(total)
 	}
 
 	c.SecureJSON(http.StatusOK, response)

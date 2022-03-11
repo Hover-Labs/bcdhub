@@ -7,15 +7,16 @@ import (
 	"github.com/baking-bad/bcdhub/internal/bcd/ast"
 	"github.com/baking-bad/bcdhub/internal/bcd/formatter"
 	"github.com/baking-bad/bcdhub/internal/bcd/tezerrors"
+	"github.com/baking-bad/bcdhub/internal/models/account"
 	"github.com/baking-bad/bcdhub/internal/models/block"
 	"github.com/baking-bad/bcdhub/internal/models/contract"
+	"github.com/baking-bad/bcdhub/internal/models/contract_metadata"
 	"github.com/baking-bad/bcdhub/internal/models/domains"
+	"github.com/baking-bad/bcdhub/internal/models/global_constant"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
 	"github.com/baking-bad/bcdhub/internal/models/protocol"
-	"github.com/baking-bad/bcdhub/internal/models/tezosdomain"
 	"github.com/baking-bad/bcdhub/internal/models/tokenmetadata"
 	"github.com/baking-bad/bcdhub/internal/models/types"
-	"github.com/baking-bad/bcdhub/internal/models/tzip"
 )
 
 // Error -
@@ -42,7 +43,7 @@ type Operation struct {
 	PaidStorageSizeDiff                int64              `json:"paid_storage_size_diff,omitempty" extensions:"x-nullable" example:"300"`
 	Errors                             []*tezerrors.Error `json:"errors,omitempty" extensions:"x-nullable"`
 	Parameters                         interface{}        `json:"parameters,omitempty" extensions:"x-nullable"`
-	StorageDiff                        interface{}        `json:"storage_diff,omitempty" extensions:"x-nullable"`
+	StorageDiff                        *ast.MiguelNode    `json:"storage_diff,omitempty" extensions:"x-nullable"`
 	RawMempool                         interface{}        `json:"rawMempool,omitempty" extensions:"x-nullable"`
 	Timestamp                          time.Time          `json:"timestamp"`
 	Protocol                           string             `json:"protocol"`
@@ -73,17 +74,17 @@ func (o *Operation) FromModel(operation operation.Operation) {
 
 	o.Level = operation.Level
 	o.Kind = operation.Kind.String()
-	o.Source = operation.Source
+	o.Source = operation.Source.Address
 	o.Fee = operation.Fee
 	o.Counter = operation.Counter
 	o.GasLimit = operation.GasLimit
 	o.StorageLimit = operation.StorageLimit
 	o.Amount = operation.Amount
-	o.Destination = operation.Destination
-	o.Delegate = operation.Delegate
+	o.Destination = operation.Destination.Address
+	o.Delegate = operation.Delegate.Address
 	o.Status = operation.Status.String()
 	o.Burned = operation.Burned
-	o.Entrypoint = operation.Entrypoint
+	o.Entrypoint = operation.Entrypoint.String()
 	o.ContentIndex = operation.ContentIndex
 	o.AllocatedDestinationContractBurned = operation.AllocatedDestinationContractBurned
 	o.ConsumedGas = operation.ConsumedGas
@@ -100,21 +101,34 @@ func (o *Operation) ToModel() operation.Operation {
 		Network:   types.NewNetwork(o.Network),
 		Internal:  o.Internal,
 		Timestamp: o.Timestamp,
-
-		Level:        o.Level,
-		Kind:         types.NewOperationKind(o.Kind),
-		Source:       o.Source,
+		Level:     o.Level,
+		Kind:      types.NewOperationKind(o.Kind),
+		Source: account.Account{
+			Network: types.NewNetwork(o.Network),
+			Address: o.Source,
+			Type:    types.NewAccountType(o.Source),
+		},
 		Fee:          o.Fee,
 		Counter:      o.Counter,
 		GasLimit:     o.GasLimit,
 		StorageLimit: o.StorageLimit,
 		Amount:       o.Amount,
-		Destination:  o.Destination,
-		Delegate:     o.Delegate,
-		Status:       types.NewOperationStatus(o.Status),
-		Burned:       o.Burned,
-		Entrypoint:   o.Entrypoint,
-
+		Destination: account.Account{
+			Network: types.NewNetwork(o.Network),
+			Address: o.Destination,
+			Type:    types.NewAccountType(o.Destination),
+		},
+		Delegate: account.Account{
+			Network: types.NewNetwork(o.Network),
+			Address: o.Delegate,
+			Type:    types.NewAccountType(o.Delegate),
+		},
+		Status: types.NewOperationStatus(o.Status),
+		Burned: o.Burned,
+		Entrypoint: types.NullString{
+			Str:   o.Entrypoint,
+			Valid: o.Entrypoint != "",
+		},
 		AllocatedDestinationContract: o.AllocatedDestinationContract,
 		ConsumedGas:                  o.ConsumedGas,
 		StorageSize:                  o.StorageSize,
@@ -128,7 +142,6 @@ type Contract struct {
 	Network   string    `json:"network"`
 	Level     int64     `json:"level"`
 	Timestamp time.Time `json:"timestamp"`
-	Language  string    `json:"language,omitempty" extensions:"x-nullable"`
 
 	Hash        string   `json:"hash"`
 	Tags        []string `json:"tags,omitempty" extensions:"x-nullable"`
@@ -148,10 +161,7 @@ type Contract struct {
 	MigrationsCount int64     `json:"migrations_count,omitempty" extensions:"x-nullable"`
 	Alias           string    `json:"alias,omitempty" extensions:"x-nullable"`
 	DelegateAlias   string    `json:"delegate_alias,omitempty" extensions:"x-nullable"`
-
-	Subscription    *Subscription `json:"subscription,omitempty" extensions:"x-nullable"`
-	TotalSubscribed int           `json:"total_subscribed"`
-	Slug            string        `json:"slug,omitempty" extensions:"x-nullable"`
+	Slug            string    `json:"slug,omitempty" extensions:"x-nullable"`
 
 	SameCount    int64 `json:"same_count"`
 	SimilarCount int64 `json:"similar_count"`
@@ -159,47 +169,31 @@ type Contract struct {
 
 // FromModel -
 func (c *Contract) FromModel(contract contract.Contract) {
-	c.Address = contract.Address
-	c.Delegate = contract.Delegate
-	c.Entrypoints = contract.Entrypoints
-	c.Hash = contract.Hash
-	c.Language = contract.Language
+	c.Address = contract.Account.Address
+	c.Alias = contract.Account.Alias
+	c.Delegate = contract.Delegate.Address
+	c.DelegateAlias = contract.Delegate.Alias
 	c.TxCount = contract.TxCount
 	c.LastAction = contract.LastAction
 
 	c.Level = contract.Level
-	c.Manager = contract.Manager
+	c.Manager = contract.Manager.Address
 	c.MigrationsCount = contract.MigrationsCount
 	c.Network = contract.Network.String()
-	c.ProjectID = contract.ProjectID
 	c.Tags = contract.Tags.ToArray()
 	c.Timestamp = contract.Timestamp
-	c.FailStrings = contract.FailStrings
-	c.Annotations = contract.Annotations
+
+	script := contract.Alpha
+	if contract.BabylonID > 0 {
+		script = contract.Babylon
+	}
+
+	c.Hash = script.Hash
+	c.FailStrings = script.FailStrings
+	c.Annotations = script.Annotations
+	c.Entrypoints = script.Entrypoints
+	c.ProjectID = script.ProjectID.String()
 	c.ID = contract.ID
-}
-
-// Subscription -
-type Subscription struct {
-	Address          string    `json:"address"`
-	Network          string    `json:"network"`
-	Alias            string    `json:"alias,omitempty" extensions:"x-nullable"`
-	SubscribedAt     time.Time `json:"subscribed_at"`
-	WatchSame        bool      `json:"watch_same"`
-	WatchSimilar     bool      `json:"watch_similar"`
-	WatchMempool     bool      `json:"watch_mempool"`
-	WatchMigrations  bool      `json:"watch_migrations"`
-	WatchDeployments bool      `json:"watch_deployments"`
-	WatchCalls       bool      `json:"watch_calls"`
-	WatchErrors      bool      `json:"watch_errors"`
-	SentryEnabled    bool      `json:"sentry_enabled"`
-	SentryDSN        string    `json:"sentry_dsn,omitempty" extensions:"x-nullable"`
-}
-
-// Event -
-type Event struct {
-	Event string    `json:"event"`
-	Date  time.Time `json:"date"`
 }
 
 // OperationResponse -
@@ -321,13 +315,12 @@ type CodeDiffResponse struct {
 
 // NetworkStats -
 type NetworkStats struct {
-	ContractsCount  int64            `json:"contracts_count" example:"10"`
-	OperationsCount int64            `json:"operations_count" example:"100"`
-	ContractCalls   uint64           `json:"contract_calls" example:"100"`
-	UniqueContracts uint64           `json:"unique_contracts" example:"100"`
-	FACount         uint64           `json:"fa_count" example:"100"`
-	Protocols       []Protocol       `json:"protocols"`
-	Languages       map[string]int64 `json:"languages"`
+	ContractsCount  int64      `json:"contracts_count" example:"10"`
+	OperationsCount int64      `json:"operations_count" example:"100"`
+	ContractCalls   uint64     `json:"contract_calls" example:"100"`
+	UniqueContracts uint64     `json:"unique_contracts" example:"100"`
+	FACount         uint64     `json:"fa_count" example:"100"`
+	Protocols       []Protocol `json:"protocols"`
 }
 
 // SearchBigMapDiff -
@@ -368,7 +361,7 @@ type Alias struct {
 }
 
 // FromModel -
-func (a *Alias) FromModel(alias *tzip.TZIP) {
+func (a *Alias) FromModel(alias *contract_metadata.ContractMetadata) {
 	a.Alias = alias.Name
 	a.Address = alias.Address
 	a.Network = alias.Network.String()
@@ -415,20 +408,6 @@ func (b *Block) FromModel(block block.Block) {
 	b.Timestamp = block.Timestamp
 }
 
-// LightContract -
-type LightContract struct {
-	Address  string    `json:"address"`
-	Network  string    `json:"network"`
-	Deployed time.Time `json:"deploy_time"`
-}
-
-// FromModel -
-func (c *LightContract) FromModel(light contract.Light) {
-	c.Address = light.Address
-	c.Network = light.Network.String()
-	c.Deployed = light.Deployed
-}
-
 // SimilarContractsResponse -
 type SimilarContractsResponse struct {
 	Count     int               `json:"count"`
@@ -438,7 +417,6 @@ type SimilarContractsResponse struct {
 // SimilarContract -
 type SimilarContract struct {
 	*Contract
-	Count   int64 `json:"count"`
 	Added   int64 `json:"added,omitempty" extensions:"x-nullable"`
 	Removed int64 `json:"removed,omitempty" extensions:"x-nullable"`
 }
@@ -449,7 +427,6 @@ func (c *SimilarContract) FromModel(similar contract.Similar, diff CodeDiffRespo
 	contract.FromModel(*similar.Contract)
 	c.Contract = &contract
 
-	c.Count = similar.Count
 	c.Added = diff.Diff.Added
 	c.Removed = diff.Diff.Removed
 }
@@ -468,8 +445,7 @@ func (c *SameContractsResponse) FromModel(same contract.SameResponse, ctx *Conte
 	for i := range same.Contracts {
 		var contract Contract
 		contract.FromModel(same.Contracts[i])
-		contract.Alias = ctx.CachedAlias(same.Contracts[i].Network, same.Contracts[i].Address)
-		contract.DelegateAlias = ctx.CachedAlias(same.Contracts[i].Network, same.Contracts[i].Delegate)
+		contract.SameCount = same.Count
 		c.Contracts[i] = contract
 	}
 }
@@ -526,15 +502,15 @@ func TransferFromModel(model domains.Transfer) (t Transfer) {
 	t.IndexedTime = model.ID
 	t.Network = model.Network.String()
 	t.Contract = model.Contract
-	t.Initiator = model.Initiator
+	t.Initiator = model.Initiator.Address
 	t.Status = model.Status.String()
 	t.Timestamp = model.Timestamp.UTC()
 	t.Level = model.Level
-	t.From = model.From
-	t.To = model.To
+	t.From = model.From.Address
+	t.To = model.To.Address
 	t.TokenID = model.TokenID
 	t.Amount = model.Amount.String()
-	t.Parent = model.Parent
+	t.Parent = model.Parent.String()
 	t.Entrypoint = model.Entrypoint
 	t.Hash = model.Hash
 	t.Counter = model.Counter
@@ -563,26 +539,22 @@ type ConfigResponse struct {
 
 // DApp -
 type DApp struct {
-	Name              string   `json:"name"`
-	ShortDescription  string   `json:"short_description"`
-	FullDescription   string   `json:"full_description"`
-	WebSite           string   `json:"website"`
-	Slug              string   `json:"slug,omitempty" extensions:"x-nullable"`
-	AgoraReviewPostID int64    `json:"agora_review_post_id,omitempty" extensions:"x-nullable"`
-	AgoraQAPostID     int64    `json:"agora_qa_post_id,omitempty" extensions:"x-nullable"`
-	Authors           []string `json:"authors"`
-	SocialLinks       []string `json:"social_links"`
-	Interfaces        []string `json:"interfaces"`
-	Categories        []string `json:"categories"`
-	Soon              bool     `json:"soon"`
-	Logo              string   `json:"logo"`
-	Cover             string   `json:"cover,omitempty" extensions:"x-nullable"`
-	Volume24Hours     float64  `json:"volume_24_hours,omitempty" extensions:"x-nullable"`
+	Name             string   `json:"name"`
+	ShortDescription string   `json:"short_description"`
+	FullDescription  string   `json:"full_description"`
+	WebSite          string   `json:"website"`
+	Slug             string   `json:"slug,omitempty" extensions:"x-nullable"`
+	Authors          []string `json:"authors"`
+	SocialLinks      []string `json:"social_links"`
+	Interfaces       []string `json:"interfaces"`
+	Categories       []string `json:"categories"`
+	Soon             bool     `json:"soon"`
+	Logo             string   `json:"logo"`
+	Cover            string   `json:"cover,omitempty" extensions:"x-nullable"`
 
-	Screenshots []Screenshot    `json:"screenshots,omitempty" extensions:"x-nullable"`
-	Contracts   []DAppContract  `json:"contracts,omitempty" extensions:"x-nullable"`
-	DexTokens   []TokenMetadata `json:"dex_tokens,omitempty" extensions:"x-nullable"`
-	Tokens      []Token         `json:"tokens,omitempty" extensions:"x-nullable"`
+	Screenshots []Screenshot   `json:"screenshots,omitempty" extensions:"x-nullable"`
+	Contracts   []DAppContract `json:"contracts,omitempty" extensions:"x-nullable"`
+	Tokens      []Token        `json:"tokens,omitempty" extensions:"x-nullable"`
 }
 
 // DAppContract -
@@ -602,8 +574,8 @@ type Screenshot struct {
 // Token -
 type Token struct {
 	TokenMetadata
-	Supply     string  `json:"supply,omitempty"`
-	Transfered float64 `json:"transfered,omitempty"`
+	Supply      string  `json:"supply,omitempty"`
+	Transferred float64 `json:"transfered,omitempty"`
 }
 
 // AccountInfo -
@@ -643,6 +615,7 @@ type TokenMetadata struct {
 	DisplayURI         string                 `json:"display_uri,omitempty" extensions:"x-nullable"`
 	ThumbnailURI       string                 `json:"thumbnail_uri,omitempty" extensions:"x-nullable"`
 	ExternalURI        string                 `json:"external_uri,omitempty" extensions:"x-nullable"`
+	Minter             string                 `json:"minter,omitempty" extensions:"x-nullable"`
 	IsTransferable     bool                   `json:"is_transferable,omitempty" extensions:"x-nullable"`
 	IsBooleanAmount    bool                   `json:"is_boolean_amount,omitempty" extensions:"x-nullable"`
 	ShouldPreferSymbol bool                   `json:"should_prefer_symbol,omitempty" extensions:"x-nullable"`
@@ -667,6 +640,7 @@ func TokenMetadataFromElasticModel(model tokenmetadata.TokenMetadata, withTokenI
 	tm.DisplayURI = model.DisplayURI
 	tm.ThumbnailURI = model.ThumbnailURI
 	tm.ExternalURI = model.ExternalURI
+	tm.Minter = model.Minter
 	tm.IsTransferable = model.IsTransferable
 	tm.IsBooleanAmount = model.IsBooleanAmount
 	tm.ShouldPreferSymbol = model.ShouldPreferSymbol
@@ -688,35 +662,7 @@ func TokenMetadataFromElasticModel(model tokenmetadata.TokenMetadata, withTokenI
 func (tm TokenMetadata) Empty() bool {
 	return tm.Symbol == "" && tm.Name == "" && tm.Decimals == nil && tm.TokenID == 0 &&
 		tm.Description == "" && tm.ArtifactURI == "" && tm.DisplayURI == "" && tm.ThumbnailURI == "" &&
-		tm.ExternalURI == "" && len(tm.Creators) == 0 && len(tm.Tags) == 0 && len(tm.Formats) == 0
-}
-
-// DomainsResponse -
-type DomainsResponse struct {
-	Domains []TezosDomain `json:"domains"`
-	Total   int64         `json:"total"`
-}
-
-// TezosDomain -
-type TezosDomain struct {
-	Name       string                 `json:"name"`
-	Expiration time.Time              `json:"expiration"`
-	Network    string                 `json:"network"`
-	Address    string                 `json:"address"`
-	Level      int64                  `json:"level"`
-	Timestamp  time.Time              `json:"timestamp"`
-	Data       map[string]interface{} `json:"data,omitempty"`
-}
-
-// FromModel -
-func (td *TezosDomain) FromModel(domain tezosdomain.TezosDomain) {
-	td.Name = domain.Name
-	td.Expiration = domain.Expiration.UTC()
-	td.Network = domain.Network.String()
-	td.Address = domain.Address
-	td.Level = domain.Level
-	td.Timestamp = domain.Timestamp.UTC()
-	td.Data = domain.Data
+		tm.ExternalURI == "" && len(tm.Creators) == 0 && len(tm.Tags) == 0 && len(tm.Formats) == 0 && tm.Minter == ""
 }
 
 // CountResponse -
@@ -737,6 +683,7 @@ type ViewSchema struct {
 	Description    string          `json:"description"`
 	Schema         *ast.JSONSchema `json:"schema"`
 	DefaultModel   interface{}     `json:"default_model,omitempty" extensions:"x-nullable"`
+	Error          string          `json:"error,omitempty"`
 }
 
 // ForkResponse -
@@ -747,23 +694,23 @@ type ForkResponse struct {
 
 // TZIPResponse -
 type TZIPResponse struct {
-	Address     string                 `json:"address,omitempty"`
-	Network     string                 `json:"network,omitempty"`
-	DomainName  string                 `json:"domain,omitempty"`
-	Extras      map[string]interface{} `json:"extras,omitempty"`
-	Name        string                 `json:"name,omitempty"`
-	Description string                 `json:"description,omitempty"`
-	Version     string                 `json:"version,omitempty"`
-	License     *tzip.License          `json:"license,omitempty"`
-	Homepage    string                 `json:"homepage,omitempty"`
-	Authors     []string               `json:"authors,omitempty"`
-	Interfaces  []string               `json:"interfaces,omitempty"`
-	Views       tzip.Views             `json:"views,omitempty"`
-	tzip.TZIP20
+	Address     string                     `json:"address,omitempty"`
+	Network     string                     `json:"network,omitempty"`
+	DomainName  string                     `json:"domain,omitempty"`
+	Extras      map[string]interface{}     `json:"extras,omitempty"`
+	Name        string                     `json:"name,omitempty"`
+	Description string                     `json:"description,omitempty"`
+	Version     string                     `json:"version,omitempty"`
+	License     *contract_metadata.License `json:"license,omitempty"`
+	Homepage    string                     `json:"homepage,omitempty"`
+	Authors     []string                   `json:"authors,omitempty"`
+	Interfaces  []string                   `json:"interfaces,omitempty"`
+	Views       contract_metadata.Views    `json:"views,omitempty"`
+	contract_metadata.TZIP20
 }
 
 // FromModel -
-func (t *TZIPResponse) FromModel(model *tzip.TZIP, withViewsAndEvents bool) {
+func (t *TZIPResponse) FromModel(model *contract_metadata.ContractMetadata, withViewsAndEvents bool) {
 	t.DomainName = model.DomainName
 	t.Extras = model.Extras
 	t.Address = model.Address
@@ -775,8 +722,8 @@ func (t *TZIPResponse) FromModel(model *tzip.TZIP, withViewsAndEvents bool) {
 	t.Authors = model.Authors
 	t.Interfaces = model.Interfaces
 
-	if model.License != nil && !model.License.IsEmpty() {
-		t.License = model.License
+	if !model.License.IsEmpty() {
+		t.License = &model.License
 	}
 
 	if withViewsAndEvents {
@@ -795,6 +742,7 @@ type HeadResponse struct {
 	ContractCalls   int64     `json:"contract_calls"`
 	UniqueContracts int64     `json:"unique_contracts"`
 	FACount         int64     `json:"fa_count"`
+	Synced          bool      `json:"synced"`
 }
 
 // TokensCountWithMetadata -
@@ -802,4 +750,24 @@ type TokensCountWithMetadata struct {
 	TZIPResponse
 	Count int64    `json:"count"`
 	Tags  []string `json:"contract_tags"`
+}
+
+// GlobalConstant -
+type GlobalConstant struct {
+	Network   types.Network      `json:"network"`
+	Timestamp time.Time          `json:"timestamp"`
+	Level     int64              `json:"level"`
+	Address   string             `json:"address"`
+	Value     stdJSON.RawMessage `json:"value,omitempty"`
+}
+
+// NewGlobalConstantFromModel -
+func NewGlobalConstantFromModel(gc global_constant.GlobalConstant) GlobalConstant {
+	return GlobalConstant{
+		Network:   gc.Network,
+		Timestamp: gc.Timestamp.UTC(),
+		Level:     gc.Level,
+		Address:   gc.Address,
+		Value:     stdJSON.RawMessage(gc.Value),
+	}
 }

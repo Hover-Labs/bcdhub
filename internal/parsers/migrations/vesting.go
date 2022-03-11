@@ -2,8 +2,10 @@ package migrations
 
 import (
 	"github.com/baking-bad/bcdhub/internal/config"
+	"github.com/baking-bad/bcdhub/internal/models/account"
 	"github.com/baking-bad/bcdhub/internal/models/migration"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
+	"github.com/baking-bad/bcdhub/internal/models/protocol"
 	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/baking-bad/bcdhub/internal/noderpc"
 	"github.com/baking-bad/bcdhub/internal/parsers"
@@ -12,52 +14,60 @@ import (
 
 // VestingParser -
 type VestingParser struct {
-	ctx            *config.Context
-	filesDirectory string
+	ctx *config.Context
 }
 
 // NewVestingParser -
-func NewVestingParser(ctx *config.Context, filesDirectory string) *VestingParser {
+func NewVestingParser(ctx *config.Context) *VestingParser {
 	return &VestingParser{
-		ctx:            ctx,
-		filesDirectory: filesDirectory,
+		ctx: ctx,
 	}
 }
 
 // Parse -
-func (p *VestingParser) Parse(data noderpc.ContractData, head noderpc.Header, network types.Network, address string) (*parsers.Result, error) {
-	proto, err := p.ctx.CachedProtocolByHash(network, head.Protocol)
-	if err != nil {
-		return nil, err
-	}
-
-	migration := &migration.Migration{
-		Level:      head.Level,
+func (p *VestingParser) Parse(data noderpc.ContractData, head noderpc.Header, network types.Network, address string, proto protocol.Protocol, result *parsers.Result) error {
+	parser := contract.NewParser(p.ctx)
+	if err := parser.Parse(&operation.Operation{
 		Network:    network,
 		ProtocolID: proto.ID,
-		Address:    address,
-		Timestamp:  head.Timestamp,
-		Kind:       types.MigrationKindBootstrap,
+		Status:     types.OperationStatusApplied,
+		Kind:       types.OperationKindOrigination,
+		Amount:     data.Balance,
+		Counter:    data.Counter,
+		Source: account.Account{
+			Network: network,
+			Address: data.Manager,
+			Type:    types.NewAccountType(data.Manager),
+		},
+		Destination: account.Account{
+			Network: network,
+			Address: address,
+			Type:    types.NewAccountType(address),
+		},
+		Delegate: account.Account{
+			Network: network,
+			Address: data.Delegate.Value,
+			Type:    types.NewAccountType(data.Delegate.Value),
+		},
+		Level:     head.Level,
+		Timestamp: head.Timestamp,
+		Script:    data.RawScript,
+	}, proto.SymLink, result); err != nil {
+		return err
 	}
 
-	parser := contract.NewParser(p.ctx, contract.WithShareDir(p.filesDirectory))
-	contractModels, err := parser.Parse(&operation.Operation{
-		Network:     network,
-		ProtocolID:  proto.ID,
-		Status:      types.OperationStatusApplied,
-		Kind:        types.OperationKindOrigination,
-		Amount:      data.Balance,
-		Counter:     data.Counter,
-		Source:      data.Manager,
-		Destination: address,
-		Delegate:    data.Delegate.Value,
-		Level:       head.Level,
-		Timestamp:   head.Timestamp,
-		Script:      data.RawScript,
-	})
-	if err != nil {
-		return nil, err
+	for i := range result.Contracts {
+		if result.Contracts[i].Network == network && result.Contracts[i].Account.Address == address {
+			result.Migrations = append(result.Migrations, &migration.Migration{
+				Level:      head.Level,
+				ProtocolID: proto.ID,
+				Timestamp:  head.Timestamp,
+				Kind:       types.MigrationKindBootstrap,
+				Contract:   result.Contracts[i],
+			})
+			break
+		}
 	}
-	contractModels.Migrations = append(contractModels.Migrations, migration)
-	return contractModels, nil
+
+	return nil
 }

@@ -4,7 +4,7 @@ rpc:
     timeout: 10
 
 storage:
-  pg: "host=${DB_HOSTNAME:-db} port=5432 user=${POSTGRES_USER} dbname=indexer password=${POSTGRES_PASSWORD} sslmode=disable"
+  pg: "host=${DB_HOSTNAME:-db} port=5432 user=${POSTGRES_USER} dbname=${POSTGRES_DB:-indexer} password=${POSTGRES_PASSWORD} sslmode=disable"
   elastic:
     - http://${ELASTIC_HOSTNAME:-elastic}:9200
   timeout: 10
@@ -28,6 +28,8 @@ api:
     ga_enabled: false
     mempool_enabled: false
     sandbox_mode: true
+    rpc:
+      sandboxnet: "localhost:20000"
   seed:
     user:
       login: sandboxuser
@@ -56,10 +58,6 @@ api:
         network: "sandboxnet"
   networks:
     - sandboxnet
-  pinata:
-    key: ${PINATA_KEY}
-    secret_key: ${PINATA_SECRET_KEY}
-    timeout_seconds: 10
 
 indexer:
   project_name: indexer
@@ -76,6 +74,3 @@ metrics:
 scripts:
   networks:
     - sandboxnet
-
-graphql:
-  db: "host=${DB_HOSTNAME} port=5432 user=graphql dbname=indexer password=${POSTGRES_GRAPHQL} sslmode=disable"

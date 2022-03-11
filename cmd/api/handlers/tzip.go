@@ -26,7 +26,7 @@ func (ctx *Context) GetMetadata(c *gin.Context) {
 	if err := c.BindUri(&req); ctx.handleError(c, err, http.StatusNotFound) {
 		return
 	}
-	tzip, err := ctx.TZIP.Get(req.NetworkID(), req.Address)
+	tzip, err := ctx.ContractMetadata.Get(req.NetworkID(), req.Address)
 	if err != nil {
 		if ctx.Storage.IsRecordNotFound(err) {
 			c.SecureJSON(http.StatusNoContent, gin.H{})
@@ -34,10 +34,6 @@ func (ctx *Context) GetMetadata(c *gin.Context) {
 			ctx.handleError(c, err, 0)
 		}
 		return
-	}
-
-	if tzip.License.IsEmpty() {
-		tzip.License = nil
 	}
 
 	var t TZIPResponse

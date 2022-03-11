@@ -1,6 +1,5 @@
 # BCD Hub
 [![Build Status](https://github.com/baking-bad/bcdhub/workflows/build/badge.svg)](https://github.com/baking-bad/bcdhub/actions?query=branch%3Amaster+workflow%3A%22build%22)
-[![Docker Build Status](https://img.shields.io/docker/cloud/build/bakingbad/bcdhub-api)](https://hub.docker.com/r/bakingbad/bcdhub-api)
 [![made_with golang](https://img.shields.io/badge/made_with-golang-blue.svg)](https://golang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -26,18 +25,15 @@ make gateway-clear
 
 ### Sandbox
 
-Make sure your Tezos node is exposed at `0.0.0.0:8732`
-```
-make sandbox-images
-make sandbox
-```
+The simplest way is just to copy the `docker-compose.flexesa.yml` to your project.
 
-Sandbox UI is now available at http://localhost:8000
-
-You can also use a builtin Flextesa instance instead (will be exposed at 8732):
+Make sure you have the latest images and run the compose:
 ```
+make sandbox-pull
 make flextesa-sandbox
 ```
+Sandbox UI is now available at http://localhost:8000
+
 
 In order to stop or reset sandbox:
 ```
@@ -55,6 +51,7 @@ make sandbox-clear
 * Telegram: https://t.me/baking_bad_chat
 * Twitter: https://twitter.com/TezosBakingBad
 * Slack: https://tezos-dev.slack.com/archives/CV5NX7F2L
+* Discord: https://discord.gg/RcPGSdcVSx
 
 
 ## About

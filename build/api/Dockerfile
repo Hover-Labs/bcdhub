@@ -20,7 +20,7 @@ COPY cmd/api cmd/api
 COPY internal internal
 
 WORKDIR $GOPATH/src/github.com/baking-bad/bcdhub/cmd/api/
-RUN go get github.com/swaggo/swag/cmd/swag
+RUN go get github.com/swaggo/swag/cmd/swag@v1.7.0
 RUN swag init --parseDependency --parseInternal --parseDepth 2
 RUN go build -a -installsuffix cgo -o /go/bin/api .
 
@@ -44,7 +44,6 @@ WORKDIR /app/api
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /go/bin/api /go/bin/api
 COPY configs/*.yml /app/api/
-COPY cmd/api/data/tzip-16-schema.json /app/api/data/tzip-16-schema.json
 
 COPY --from=builder /go/bin/bcdctl /go/bin/bcdctl
 COPY --from=builder /go/bin/migration /go/bin/migration

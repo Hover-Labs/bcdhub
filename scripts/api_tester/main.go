@@ -22,10 +22,8 @@ func main() {
 	}
 
 	ctx := config.NewContext(
-		config.WithStorage(cfg.Storage, "api_tester", 0),
+		config.WithStorage(cfg.Storage, "api_tester", 0, cfg.Scripts.Connections.Open, cfg.Scripts.Connections.Idle),
 		config.WithRPC(cfg.RPC),
-		config.WithShare(cfg.SharePath),
-		config.WithTzKTServices(cfg.TzKT),
 		config.WithSearch(cfg.Storage),
 		config.WithLoadErrorDescriptions(),
 		config.WithConfigCopy(cfg),
@@ -55,7 +53,7 @@ func request(uri string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Invalid status code: [%d] %s", resp.StatusCode, url)
+		return errors.Errorf("invalid status code: [%d] %s", resp.StatusCode, url)
 	}
 	return nil
 }

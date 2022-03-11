@@ -1,7 +1,6 @@
 package types
 
 import (
-	"database/sql/driver"
 	"strconv"
 
 	"github.com/pkg/errors"
@@ -20,41 +19,41 @@ const (
 	Florencenet
 	Granadanet
 	Sandboxnet
+	Hangzhounet
+	Hangzhou2net
+	Ithacanet
 )
 
 var networkNames = map[Network]string{
-	Mainnet:     "mainnet",
-	Carthagenet: "carthagenet",
-	Delphinet:   "delphinet",
-	Edo2net:     "edo2net",
-	Florencenet: "florencenet",
-	Granadanet:  "granadanet",
-	Sandboxnet:  "sandboxnet",
+	Mainnet:      "mainnet",
+	Carthagenet:  "carthagenet",
+	Delphinet:    "delphinet",
+	Edo2net:      "edo2net",
+	Florencenet:  "florencenet",
+	Granadanet:   "granadanet",
+	Sandboxnet:   "sandboxnet",
+	Hangzhounet:  "hangzhounet",
+	Hangzhou2net: "hangzhou2net",
+	Ithacanet:    "ithacanet",
 }
 
 var namesToNetwork = map[string]Network{
-	"mainnet":     Mainnet,
-	"carthagenet": Carthagenet,
-	"delphinet":   Delphinet,
-	"edo2net":     Edo2net,
-	"florencenet": Florencenet,
-	"granadanet":  Granadanet,
-	"sandboxnet":  Sandboxnet,
+	"mainnet":      Mainnet,
+	"carthagenet":  Carthagenet,
+	"delphinet":    Delphinet,
+	"edo2net":      Edo2net,
+	"florencenet":  Florencenet,
+	"granadanet":   Granadanet,
+	"sandboxnet":   Sandboxnet,
+	"hangzhounet":  Hangzhounet,
+	"hangzhou2net": Hangzhou2net,
+	"ithacanet":    Ithacanet,
 }
 
 // String - convert enum to string for printing
 func (network Network) String() string {
 	return networkNames[network]
 }
-
-// Scan -
-func (network *Network) Scan(value interface{}) error {
-	*network = Network(value.(int64))
-	return nil
-}
-
-// Value -
-func (network Network) Value() (driver.Value, error) { return uint64(network), nil }
 
 // UnmarshalJSON -
 func (network *Network) UnmarshalJSON(data []byte) error {

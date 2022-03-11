@@ -7,12 +7,13 @@ import (
 
 	"github.com/baking-bad/bcdhub/internal/logger"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
+	"github.com/baking-bad/bcdhub/internal/models/types"
 )
 
 // Item -
 type Item struct {
 	ParentID   int64
-	Entrypoint string
+	Entrypoint types.NullString
 
 	children     []int64
 	source       string
@@ -23,15 +24,16 @@ type Item struct {
 
 // NewItem -
 func NewItem(operation operation.Operation, parentID int64) *Item {
-	return &Item{
+	item := &Item{
 		ParentID:     parentID,
-		Entrypoint:   operation.Entrypoint,
 		children:     make([]int64, 0),
-		source:       operation.Source,
-		destination:  operation.Destination,
+		source:       operation.Source.Address,
+		destination:  operation.Destination.Address,
 		contentIndex: operation.ContentIndex,
 		nonce:        operation.Nonce,
+		Entrypoint:   operation.Entrypoint,
 	}
+	return item
 }
 
 // GetID -
@@ -41,7 +43,7 @@ func (sti *Item) GetID() int64 {
 
 // String -
 func (sti *Item) String() string {
-	s := sti.Entrypoint
+	s := sti.Entrypoint.String()
 	if len(s) < 20 {
 		s += strings.Repeat(" ", 20-len(s))
 	}
@@ -58,7 +60,7 @@ func (sti *Item) IsNext(operation operation.Operation) bool {
 	if !sti.gtNonce(operation.Nonce) {
 		return false
 	}
-	return sti.destination == operation.Source
+	return sti.destination == operation.Source.Address
 }
 
 func (sti *Item) gtNonce(nonce *int64) bool {
@@ -174,8 +176,8 @@ func (st *StackTrace) print(arr []int64, depth int, builder io.StringWriter) err
 // Fill -
 func (st *StackTrace) Fill(repo operation.Repository, op operation.Operation) error {
 	ops, err := repo.Get(map[string]interface{}{
-		"network": op.Network,
-		"hash":    op.Hash,
+		"operation.network": op.Network,
+		"hash":              op.Hash,
 	}, 0, true)
 	if err != nil {
 		return err

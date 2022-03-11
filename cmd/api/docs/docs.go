@@ -57,7 +57,7 @@ var doc = `{
                     },
                     {
                         "type": "string",
-                        "description": "Comma-separated list of addresses (e.g. addr1,addr2,addr3)",
+                        "description": "Comma-separated list of addresses (e.g. addr1,addr2,addr3), max 10 addresses",
                         "name": "address",
                         "in": "query"
                     }
@@ -177,6 +177,16 @@ var doc = `{
                         "name": "address",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "enum": [
+                            "true",
+                            "false"
+                        ],
+                        "type": "string",
+                        "description": "Hide zero balances from response",
+                        "name": "hide_empty",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -240,6 +250,16 @@ var doc = `{
                         "name": "address",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "enum": [
+                            "true",
+                            "false"
+                        ],
+                        "type": "string",
+                        "description": "Hide zero balances from response",
+                        "name": "hide_empty",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -377,7 +397,7 @@ var doc = `{
                         "in": "query"
                     },
                     {
-                        "maximum": 10,
+                        "maximum": 50,
                         "minimum": 0,
                         "type": "integer",
                         "description": "Requested count",
@@ -398,6 +418,16 @@ var doc = `{
                         "type": "string",
                         "description": "Field using for sorting",
                         "name": "sort_by",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "true",
+                            "false"
+                        ],
+                        "type": "string",
+                        "description": "Hide zero balances from response",
+                        "name": "hide_empty",
                         "in": "query"
                     }
                 ],
@@ -2061,6 +2091,85 @@ var doc = `{
                 }
             }
         },
+        "/v1/contract/{network}/{address}/transfers": {
+            "get": {
+                "description": "Show contract` + "`" + `s tokens transfers.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "contract"
+                ],
+                "summary": "Show contract` + "`" + `s tokens transfers",
+                "operationId": "get-contract-transfers",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network",
+                        "name": "network",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "maxLength": 36,
+                        "minLength": 36,
+                        "type": "string",
+                        "description": "KT address",
+                        "name": "address",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "maximum": 10,
+                        "type": "integer",
+                        "description": "Transfers count",
+                        "name": "size",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset",
+                        "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Token ID",
+                        "name": "token_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.TransferResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/contract/{network}/{address}/views/execute": {
             "post": {
                 "description": "Execute view of contracts metadata",
@@ -2243,9 +2352,9 @@ var doc = `{
                 }
             }
         },
-        "/v1/domains/{network}": {
+        "/v1/global_constants/{network}/{address}": {
             "get": {
-                "description": "Show all tezos domains for network",
+                "description": "Get global constant",
                 "consumes": [
                     "application/json"
                 ],
@@ -2253,106 +2362,40 @@ var doc = `{
                     "application/json"
                 ],
                 "tags": [
-                    "domains"
+                    "contract"
                 ],
-                "summary": "Show all tezos domains for network",
-                "operationId": "list-domains",
+                "summary": "Get global constant",
+                "operationId": "get-global-constant",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Network",
+                        "description": "network",
                         "name": "network",
                         "in": "path",
                         "required": true
                     },
                     {
-                        "maximum": 10,
-                        "type": "integer",
-                        "description": "Transfers count",
-                        "name": "size",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Offset",
-                        "name": "offset",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.DomainsResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.Error"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.Error"
-                        }
-                    }
-                }
-            }
-        },
-        "/v1/domains/{network}/resolve": {
-            "get": {
-                "description": "Resolve domain by address and vice versa",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "domains"
-                ],
-                "summary": "Resolve domain",
-                "operationId": "resolve-domain",
-                "parameters": [
-                    {
+                        "maxLength": 54,
+                        "minLength": 54,
                         "type": "string",
-                        "description": "Network",
-                        "name": "network",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Domain name",
-                        "name": "name",
-                        "in": "query"
-                    },
-                    {
-                        "maxLength": 36,
-                        "minLength": 36,
-                        "type": "string",
-                        "description": "Address",
+                        "description": "expr address of constant",
                         "name": "address",
-                        "in": "query"
+                        "in": "path",
+                        "required": true
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/handlers.TezosDomain"
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/handlers.GlobalConstant"
+                            }
                         }
                     },
-                    "204": {
-                        "description": "No Content",
-                        "schema": {
-                            "$ref": "#/definitions/gin.H"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/handlers.Error"
                         }
@@ -2399,8 +2442,53 @@ var doc = `{
                 }
             }
         },
+        "/v1/operation/{id}/diff": {
+            "get": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "operations"
+                ],
+                "summary": "Get operation storage diff",
+                "operationId": "get-operation-diff",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Internal BCD operation ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/ast.MiguelNode"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/operation/{id}/error_location": {
             "get": {
+                "description": "Get code line where operation failed",
                 "consumes": [
                     "application/json"
                 ],
@@ -2615,12 +2703,6 @@ var doc = `{
                         "type": "string",
                         "description": "Comma-separated list of indices for searching. Values: contract, operation, bigmapdiff",
                         "name": "i",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Comma-separated list of languages for searching. Values: smartpy, liquidity, ligo, lorentz, michelson",
-                        "name": "l",
                         "in": "query"
                     }
                 ],
@@ -3133,6 +3215,13 @@ var doc = `{
                         "name": "token_id",
                         "in": "query",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "DApp slug",
+                        "name": "slug",
+                        "in": "query",
+                        "required": true
                     }
                 ],
                 "responses": {
@@ -3336,85 +3425,6 @@ var doc = `{
                     }
                 }
             }
-        },
-        "/v1/{network}/{address}/transfers": {
-            "get": {
-                "description": "Show contract` + "`" + `s tokens transfers.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "contract"
-                ],
-                "summary": "Show contract` + "`" + `s tokens transfers",
-                "operationId": "get-contract-transfers",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Network",
-                        "name": "network",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "maxLength": 36,
-                        "minLength": 36,
-                        "type": "string",
-                        "description": "KT address",
-                        "name": "address",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "maximum": 10,
-                        "type": "integer",
-                        "description": "Transfers count",
-                        "name": "size",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Offset",
-                        "name": "offset",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Token ID",
-                        "name": "token_id",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.TransferResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.Error"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.Error"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/handlers.Error"
-                        }
-                    }
-                }
-            }
         }
     },
     "definitions": {
@@ -3478,6 +3488,10 @@ var doc = `{
                 },
                 "x-itemTitle": {
                     "type": "string"
+                },
+                "x-options": {
+                    "type": "object",
+                    "additionalProperties": true
                 }
             }
         },
@@ -3888,10 +3902,6 @@ var doc = `{
                 "id": {
                     "type": "integer"
                 },
-                "language": {
-                    "type": "string",
-                    "x-nullable": true
-                },
                 "last_action": {
                     "type": "string",
                     "x-nullable": true
@@ -3951,20 +3961,6 @@ var doc = `{
             "type": "object",
             "properties": {
                 "count": {
-                    "type": "integer"
-                }
-            }
-        },
-        "handlers.DomainsResponse": {
-            "type": "object",
-            "properties": {
-                "domains": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/handlers.TezosDomain"
-                    }
-                },
-                "total": {
                     "type": "integer"
                 }
             }
@@ -4050,6 +4046,29 @@ var doc = `{
                 }
             }
         },
+        "handlers.GlobalConstant": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string"
+                },
+                "level": {
+                    "type": "integer"
+                },
+                "network": {
+                    "type": "integer"
+                },
+                "timestamp": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
         "handlers.HeadResponse": {
             "type": "object",
             "properties": {
@@ -4106,15 +4125,17 @@ var doc = `{
         "handlers.NetworkStats": {
             "type": "object",
             "properties": {
+                "contract_calls": {
+                    "type": "integer",
+                    "example": 100
+                },
                 "contracts_count": {
                     "type": "integer",
                     "example": 10
                 },
-                "languages": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "integer"
-                    }
+                "fa_count": {
+                    "type": "integer",
+                    "example": 100
                 },
                 "operations_count": {
                     "type": "integer",
@@ -4125,6 +4146,10 @@ var doc = `{
                     "items": {
                         "$ref": "#/definitions/handlers.Protocol"
                     }
+                },
+                "unique_contracts": {
+                    "type": "integer",
+                    "example": 100
                 }
             }
         },
@@ -4255,8 +4280,8 @@ var doc = `{
                     "type": "string"
                 },
                 "storage_diff": {
-                    "type": "object",
-                    "x-nullable": true
+                    "x-nullable": true,
+                    "$ref": "#/definitions/ast.MiguelNode"
                 },
                 "storage_limit": {
                     "type": "integer",
@@ -4403,10 +4428,6 @@ var doc = `{
                 },
                 "id": {
                     "type": "integer"
-                },
-                "language": {
-                    "type": "string",
-                    "x-nullable": true
                 },
                 "last_action": {
                     "type": "string",
@@ -4581,33 +4602,6 @@ var doc = `{
                     "items": {
                         "$ref": "#/definitions/tzip.View"
                     }
-                }
-            }
-        },
-        "handlers.TezosDomain": {
-            "type": "object",
-            "properties": {
-                "address": {
-                    "type": "string"
-                },
-                "data": {
-                    "type": "object",
-                    "additionalProperties": true
-                },
-                "expiration": {
-                    "type": "string"
-                },
-                "level": {
-                    "type": "integer"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "network": {
-                    "type": "string"
-                },
-                "timestamp": {
-                    "type": "string"
                 }
             }
         },
@@ -4997,6 +4991,12 @@ var doc = `{
                         "type": "string"
                     }
                 },
+                "contract_tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "count": {
                     "type": "integer"
                 },
@@ -5060,6 +5060,10 @@ var doc = `{
                 },
                 "counter": {
                     "type": "integer"
+                },
+                "entrypoint": {
+                    "type": "string",
+                    "x-nullable": true
                 },
                 "from": {
                     "type": "string"

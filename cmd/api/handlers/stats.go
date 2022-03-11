@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/baking-bad/bcdhub/internal/helpers"
 	"github.com/baking-bad/bcdhub/internal/models"
+	"github.com/baking-bad/bcdhub/internal/models/block"
 	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
@@ -22,17 +22,24 @@ import (
 // @Failure 500 {object} Error
 // @Router /v1/stats [get]
 func (ctx *Context) GetStats(c *gin.Context) {
-	stats, err := ctx.Blocks.LastByNetworks()
-	if ctx.handleError(c, err, 0) {
-		return
+	stats := make([]block.Block, 0)
+	for _, net := range ctx.Config.API.Networks {
+		block, err := ctx.Blocks.Last(types.NewNetwork(net))
+		if err != nil {
+			if ctx.Storage.IsRecordNotFound(err) {
+				continue
+			}
+			ctx.handleError(c, err, 0)
+			return
+		}
+		stats = append(stats, block)
 	}
+
 	blocks := make([]Block, 0)
 	for i := range stats {
-		if helpers.StringInArray(stats[i].Network.String(), ctx.Config.API.Networks) {
-			var block Block
-			block.FromModel(stats[i])
-			blocks = append(blocks, block)
-		}
+		var block Block
+		block.FromModel(stats[i])
+		blocks = append(blocks, block)
 	}
 
 	c.SecureJSON(http.StatusOK, blocks)
@@ -57,7 +64,7 @@ func (ctx *Context) GetNetworkStats(c *gin.Context) {
 	}
 
 	var stats NetworkStats
-	counts, err := ctx.Storage.GetNetworkCountStats(req.NetworkID())
+	counts, err := ctx.Statistics.NetworkCountStats(req.NetworkID())
 	if ctx.handleError(c, err, 0) {
 		return
 	}
@@ -74,13 +81,7 @@ func (ctx *Context) GetNetworkStats(c *gin.Context) {
 	}
 	stats.Protocols = ps
 
-	languages, err := ctx.Storage.GetLanguagesForNetwork(req.NetworkID())
-	if ctx.handleError(c, err, 0) {
-		return
-	}
-	stats.Languages = languages
-
-	head, err := ctx.Storage.GetStats(req.NetworkID())
+	head, err := ctx.Statistics.NetworkStats(req.NetworkID())
 	if ctx.handleError(c, err, 0) {
 		return
 	}
@@ -130,12 +131,7 @@ func (ctx *Context) GetSeries(c *gin.Context) {
 		return
 	}
 
-	var series [][]float64
-	if reqArgs.isCached() {
-		series, err = ctx.StorageDB.GetCachedHistogram(reqArgs.Period, reqArgs.Name, req.Network)
-	} else {
-		series, err = ctx.Storage.GetDateHistogram(reqArgs.Period, options...)
-	}
+	series, err := ctx.Statistics.Histogram(reqArgs.Period, options...)
 	if ctx.handleError(c, err, 0) {
 		return
 	}
@@ -167,7 +163,7 @@ func (ctx *Context) getHistogramOptions(name string, network types.Network, addr
 
 		filters = append(filters, models.HistogramFilter{
 			Field: "status",
-			Value: types.OperationStatusApplied,
+			Value: types.OperationStatusApplied.String(),
 			Kind:  models.HistogramFilterKindMatch,
 		})
 
@@ -194,7 +190,7 @@ func (ctx *Context) getHistogramOptions(name string, network types.Network, addr
 
 		return []models.HistogramOption{
 			models.WithHistogramIndex(models.DocOperations),
-			models.WithHistogramFunction("sum", "paid_storage_size_diff"),
+			models.WithHistogramFunction("sum", "paid_storage_diff"),
 			models.WithHistogramFilters(filters),
 		}, nil
 	case "consumed_gas":
@@ -222,7 +218,7 @@ func (ctx *Context) getHistogramOptions(name string, network types.Network, addr
 
 		return []models.HistogramOption{
 			models.WithHistogramIndex(models.DocOperations),
-			models.WithHistogramFunction("cardinality", "initiator"),
+			models.WithHistogramFunction("cardinality", "initiator.keyword"),
 			models.WithHistogramFilters(filters),
 		}, nil
 	case "volume":

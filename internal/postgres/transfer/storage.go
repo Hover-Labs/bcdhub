@@ -5,11 +5,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/baking-bad/bcdhub/internal/models"
+	"github.com/baking-bad/bcdhub/internal/models/account"
 	"github.com/baking-bad/bcdhub/internal/models/dapp"
 	"github.com/baking-bad/bcdhub/internal/models/transfer"
 	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/baking-bad/bcdhub/internal/postgres/core"
+	"github.com/go-pg/pg/v10"
 )
 
 // Storage -
@@ -22,57 +23,28 @@ func NewStorage(es *core.Postgres) *Storage {
 	return &Storage{es}
 }
 
-// Get -
-func (storage *Storage) Get(ctx transfer.GetContext) (po transfer.Pageable, err error) {
-	po.Transfers = make([]transfer.Transfer, 0)
-	query := storage.DB.Table(models.DocTransfers)
-	storage.buildGetContext(query, ctx, true)
-
-	if err = query.Find(&po.Transfers).Error; err != nil {
-		return
-	}
-
-	received := len(po.Transfers)
-	size := storage.GetPageSize(ctx.Size)
-	if ctx.Offset == 0 && size > received {
-		po.Total = int64(len(po.Transfers))
-	} else {
-		countQuery := storage.DB.Table(models.DocTransfers)
-		storage.buildGetContext(countQuery, ctx, false)
-		if err = countQuery.Count(&po.Total).Error; err != nil {
-			return
-		}
-	}
-
-	if received > 0 {
-		po.LastID = fmt.Sprintf("%d", po.Transfers[received-1].ID)
-	}
-	return po, nil
-}
-
 // GetAll -
 func (storage *Storage) GetAll(network types.Network, level int64) ([]transfer.Transfer, error) {
 	var transfers []transfer.Transfer
-	err := storage.DB.Table(models.DocTransfers).
+	err := storage.DB.Model(&transfers).
 		Where("network = ?", network).
-		Where("level > ?", level).
-		Find(&transfers).Error
+		Where("level = ?", level).
+		Select(&transfers)
 	return transfers, err
 }
 
 // GetTransfered -
 func (storage *Storage) GetTransfered(network types.Network, contract string, tokenID uint64) (result float64, err error) {
-	if err = storage.DB.Table(models.DocTransfers).
-		Scopes(
-			core.Token(network, contract, tokenID),
-			core.IsApplied,
-		).
-		Select("COALESCE(SUM(amount), 0)").
-		Where("transfers.to != '' AND transfers.from != ''").
-		Scan(&result).Error; err != nil {
-		return
-	}
+	query := storage.DB.Model().Model((*transfer.Transfer)(nil)).
+		ColumnExpr("COALESCE(SUM(amount), 0)").
+		Where("to_id is not null").
+		Where("from_id is not null").
+		Where("network = ?", network).
+		Where("contract = ?", contract).
+		Where("token_id = ?", tokenID)
 
+	core.IsApplied(query)
+	err = query.Select(&result)
 	return
 }
 
@@ -81,13 +53,30 @@ func (storage *Storage) GetToken24HoursVolume(network types.Network, contract st
 	aDayAgo := time.Now().UTC().AddDate(0, 0, -1)
 
 	var volume float64
-	err := storage.DB.Table(models.DocTransfers).
-		Select("COALESCE(SUM(amount), 0)").
-		Scopes(core.Token(network, contract, tokenID), core.IsApplied).
-		Where("parent IN ?", entrypoints).
-		Where("initiator IN ?", initiators).
+	query := storage.DB.Model((*transfer.Transfer)(nil)).
+		ColumnExpr("COALESCE(SUM(amount), 0)").
 		Where("timestamp > ?", aDayAgo).
-		Scan(&volume).Error
+		Where("network = ?", network).
+		Where("contract = ?", contract).
+		Where("token_id = ?", tokenID)
+
+	if len(entrypoints) > 0 {
+		query.WhereIn("parent IN (?)", entrypoints)
+	}
+	if len(initiators) > 0 {
+		var ids []int64
+		if err := storage.DB.Model((*account.Account)(nil)).
+			Column("id").
+			WhereIn("address IN (?)", initiators).
+			Where("network = ?", network).
+			Select(&ids); err != nil {
+			return 0, err
+		}
+		query.WhereIn("initiator_id IN (?)", ids)
+	}
+
+	core.IsApplied(query)
+	err := query.Select(&volume)
 
 	return volume, err
 }
@@ -96,16 +85,16 @@ const (
 	tokenVolumeSeriesRequestTemplate = `
 		with f as (
 			select generate_series(
-			date_trunc('%s', %s),
-			date_trunc('%s', now()),
-			'1 %s'::interval
+			date_trunc(?period, ?start_date),
+			date_trunc(?period, now()),
+			?interval ::interval
 			) as val
 		)
 		select
 			extract(epoch from f.val),
 			sum(amount) as value
 		from f
-		left join transfers on date_trunc('%s', transfers.timestamp) = f.val where (transfers.from != transfers.to) and (status = 1) %s
+		left join transfers on date_trunc(?period, transfers.timestamp) = f.val where (transfers.from_id != transfers.to_id) and (status = 1) and token_id = ?token_id ?conditions
 		group by 1
 		order by date_part
 	`
@@ -118,39 +107,46 @@ func (storage *Storage) GetTokenVolumeSeries(network types.Network, period strin
 	}
 
 	conditions := make([]string, 0)
-	conditions = append(conditions, fmt.Sprintf("(token_id = %d)", tokenID))
 	if network != types.Empty {
-		conditions = append(conditions, fmt.Sprintf("(network = %d)", network))
+		conditions = append(conditions, fmt.Sprintf("network = %d", network))
 	}
 
 	if len(contracts) > 0 {
-		addresses := make([]string, 0)
+		contractConditions := make([]string, len(contracts))
 		for i := range contracts {
-			addresses = append(addresses, fmt.Sprintf("(contract = '%s')", contracts[i]))
+			contractConditions[i] = fmt.Sprintf("contract = '%s'", contracts[i])
 		}
-		conditions = append(conditions, fmt.Sprintf("(%s)", strings.Join(addresses, " or ")))
+		conditions = append(conditions, strings.Join(contractConditions, " or "))
 	}
 
 	if len(entrypoints) > 0 {
-		addresses := make([]string, 0)
-		for i := range entrypoints {
-			for j := range entrypoints[i].Entrypoint {
-				addresses = append(addresses, fmt.Sprintf("(initiator = '%s' and parent = '%s')", entrypoints[i].Address, entrypoints[i].Entrypoint[j]))
+		entrypointConditions := make([]string, 0)
+		for _, e := range entrypoints {
+			var initiatorID int64
+			if err := storage.DB.Model((*account.Account)(nil)).Column("id").Where("network = ?", network).Where("address = ?", e.Address).Select(&initiatorID); err != nil {
+				return nil, err
+			}
+			for j := range e.Entrypoint {
+				entrypointConditions = append(entrypointConditions, fmt.Sprintf("(initiator_id = %d and parent = '%s')", initiatorID, e.Entrypoint[j]))
 			}
 		}
-		conditions = append(conditions, fmt.Sprintf("(%s)", strings.Join(addresses, " or ")))
+		conditions = append(conditions, strings.Join(entrypointConditions, " or "))
 	}
 
-	var cond string
-	if len(conditions) > 0 {
-		cond = fmt.Sprintf(" and %s", strings.Join(conditions, " and "))
+	stringConditions := strings.Join(conditions, ") and (")
+	if len(stringConditions) > 0 {
+		stringConditions = "and (" + stringConditions
+		stringConditions += ")"
 	}
-
-	from := core.GetHistogramInterval(period)
-	req := fmt.Sprintf(tokenVolumeSeriesRequestTemplate, period, from, period, period, period, cond)
 
 	var resp []core.HistogramResponse
-	if err := storage.DB.Raw(req).Scan(&resp).Error; err != nil {
+	if _, err := storage.DB.
+		WithParam("token_id", tokenID).
+		WithParam("period", period).
+		WithParam("start_date", pg.Safe(core.GetHistogramInterval(period))).
+		WithParam("interval", fmt.Sprintf("1 %s", period)).
+		WithParam("conditions", pg.Safe(stringConditions)).
+		Query(&resp, tokenVolumeSeriesRequestTemplate); err != nil {
 		return nil, err
 	}
 
@@ -164,16 +160,18 @@ func (storage *Storage) GetTokenVolumeSeries(network types.Network, period strin
 const (
 	calcBalanceRequest = `
 	select (coalesce(value_to, 0) - coalesce(value_from, 0)) as balance, coalesce(t1.address, t2.address) as address, coalesce(t1.token_id, t2.token_id) as token_id from 
-		(select sum(amount) as value_from, "from" as address, token_id from transfers where "from" is not null and contract = '%s' and network = %d group by "from", token_id) t1
+		(select sum(amount) as value_from, accounts.address as address, token_id from transfers left join accounts on from_id = accounts.id where "from_id" is not null and contract = ?contract and transfers.network = ?network group by accounts.address, token_id) t1
 	full outer join 
-		(select sum(amount) as value_to, "to" as address, token_id from transfers where "to" is not null and contract = '%s' and network = %d group by "to", token_id) t2
+		(select sum(amount) as value_to, accounts.address as address, token_id from transfers left join accounts on to_id = accounts.id where "to_id" is not null and contract = ?contract and transfers.network = ?network group by accounts.address, token_id) t2
 		on t1.address = t2.address and t1.token_id = t2.token_id;`
 )
 
 // CalcBalances -
 func (storage *Storage) CalcBalances(network types.Network, contract string) ([]transfer.Balance, error) {
-	request := fmt.Sprintf(calcBalanceRequest, contract, network, contract, network)
 	var balances []transfer.Balance
-	err := storage.DB.Raw(request).Scan(&balances).Error
+	_, err := storage.DB.
+		WithParam("network", network).
+		WithParam("contract", contract).
+		Query(&balances, calcBalanceRequest)
 	return balances, err
 }

@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -9,10 +10,10 @@ import (
 	"github.com/baking-bad/bcdhub/internal/logger"
 	"github.com/baking-bad/bcdhub/internal/models/tokenmetadata"
 	"github.com/baking-bad/bcdhub/internal/models/types"
-	tzipStorage "github.com/baking-bad/bcdhub/internal/parsers/tzip/storage"
-	"github.com/baking-bad/bcdhub/internal/parsers/tzip/tokens"
+	tzipStorage "github.com/baking-bad/bcdhub/internal/parsers/contract_metadata/storage"
+	"github.com/baking-bad/bcdhub/internal/parsers/contract_metadata/tokens"
+	"github.com/go-pg/pg/v10"
 	"github.com/schollz/progressbar/v3"
-	"gorm.io/gorm"
 )
 
 // TokenMetadataUnknown - migration that requests again token metadata
@@ -79,7 +80,7 @@ func (m *TokenMetadataUnknown) Do(ctx *config.Context) error {
 		metadata[i].Formats = types.Bytes(remoteMetadata.Formats)
 		metadata[i].Extras = remoteMetadata.Extras
 
-		err := ctx.StorageDB.DB.Transaction(func(tx *gorm.DB) error {
+		err := ctx.StorageDB.DB.RunInTransaction(context.Background(), func(tx *pg.Tx) error {
 			return metadata[i].Save(tx)
 		})
 		if err != nil {

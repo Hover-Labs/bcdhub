@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"context"
 	"strings"
 
 	"github.com/baking-bad/bcdhub/internal/bcd"
@@ -49,13 +50,13 @@ func (m *TokenBalanceRecalc) Do(ctx *config.Context) error {
 		return err
 	}
 
-	return m.Recalc(ctx, network, address)
+	return m.Recalc(ctx, types.NewNetwork(network), address)
 }
 
 // Recalc -
-func (m *TokenBalanceRecalc) Recalc(ctx *config.Context, network, address string) error {
-	if !helpers.StringInArray(network, ctx.Config.Scripts.Networks) {
-		return errors.Errorf("Invalid network: `%s`. Availiable values: %s", network, strings.Join(ctx.Config.Scripts.Networks, ","))
+func (m *TokenBalanceRecalc) Recalc(ctx *config.Context, network types.Network, address string) error {
+	if !helpers.StringInArray(network.String(), ctx.Config.Scripts.Networks) {
+		return errors.Errorf("Invalid network: `%s`. Available values: %s", network, strings.Join(ctx.Config.Scripts.Networks, ","))
 	}
 
 	if !bcd.IsContract(address) {
@@ -63,14 +64,17 @@ func (m *TokenBalanceRecalc) Recalc(ctx *config.Context, network, address string
 		return nil
 	}
 
-	typ := types.NewNetwork(network)
-
 	logger.Info().Msg("Removing token balance entities....")
-	if err := ctx.Storage.DeleteByContract(typ, []string{models.DocTokenBalances}, address); err != nil {
+	if res, err := ctx.StorageDB.DB.Model((*tokenbalance.TokenBalance)(nil)).
+		Where("network = ?", network).
+		Where("contract = ?", address).
+		Delete(); err != nil {
 		return err
+	} else {
+		logger.Info().Msgf("removed %d balances", res.RowsAffected())
 	}
 
-	balances, err := ctx.Transfers.CalcBalances(typ, address)
+	balances, err := ctx.Transfers.CalcBalances(network, address)
 	if err != nil {
 		return err
 	}
@@ -78,22 +82,26 @@ func (m *TokenBalanceRecalc) Recalc(ctx *config.Context, network, address string
 
 	updates := make([]models.Model, 0)
 	for _, balance := range balances {
+		acc, err := ctx.Accounts.Get(network, balance.Address)
+		if err != nil {
+			return err
+		}
 		updates = append(updates, &tokenbalance.TokenBalance{
-			Network:  typ,
-			Address:  balance.Address,
-			Contract: address,
-			TokenID:  balance.TokenID,
-			Balance:  balance.Balance,
-			IsLedger: true,
+			Network:   network,
+			AccountID: acc.ID,
+			Contract:  address,
+			TokenID:   balance.TokenID,
+			Balance:   balance.Balance,
+			IsLedger:  true,
 		})
 	}
 
 	logger.Info().Msg("Saving...")
-	return ctx.Storage.Save(updates)
+	return ctx.Storage.Save(context.Background(), updates)
 }
 
 // DoBatch -
-func (m *TokenBalanceRecalc) DoBatch(ctx *config.Context, contracts map[string]string) error {
+func (m *TokenBalanceRecalc) DoBatch(ctx *config.Context, contracts map[string]types.Network) error {
 	for address, network := range contracts {
 		if err := m.Recalc(ctx, network, address); err != nil {
 			return err
@@ -105,14 +113,14 @@ func (m *TokenBalanceRecalc) DoBatch(ctx *config.Context, contracts map[string]s
 
 // RecalcAllContractEvents -
 func (m *TokenBalanceRecalc) RecalcAllContractEvents(ctx *config.Context) error {
-	tzips, err := ctx.TZIP.GetWithEvents(0)
+	tzips, err := ctx.ContractMetadata.GetWithEvents(0)
 	if err != nil {
 		return err
 	}
 
 	for _, tzip := range tzips {
 		logger.Info().Msgf("Starting %s %s", tzip.Network, tzip.Address)
-		if err := m.Recalc(ctx, tzip.Network.String(), tzip.Address); err != nil {
+		if err := m.Recalc(ctx, tzip.Network, tzip.Address); err != nil {
 			return err
 		}
 	}

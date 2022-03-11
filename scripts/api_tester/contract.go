@@ -9,6 +9,7 @@ import (
 	"github.com/baking-bad/bcdhub/internal/config"
 	"github.com/baking-bad/bcdhub/internal/logger"
 	"github.com/baking-bad/bcdhub/internal/models/contract"
+	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/schollz/progressbar/v3"
 )
 
@@ -19,9 +20,7 @@ func testContracts(ctx *config.Context) {
 	for _, network := range ctx.Config.API.Networks {
 		logger.Info().Msgf("testing %s contract endpoints...", network)
 
-		contracts, err := ctx.Contracts.GetMany(map[string]interface{}{
-			"network": network,
-		})
+		contracts, err := ctx.Contracts.GetMany(types.NewNetwork(network))
 		if err != nil {
 			logger.Error().Msgf("testContracts: %s", err.Error())
 			return
@@ -89,7 +88,7 @@ func testContract(tasks chan contract.Contract, stop chan struct{}, counter *int
 		case <-stop:
 			return
 		case contract := <-tasks:
-			prefix := fmt.Sprintf("contract/%s/%s", contract.Network, contract.Address)
+			prefix := fmt.Sprintf("contract/%s/%s", contract.Network, contract.Account.Address)
 
 			if err := request(prefix); err != nil {
 				logger.Err(err)
@@ -120,11 +119,6 @@ func testContract(tasks chan contract.Contract, stop chan struct{}, counter *int
 			}
 			if err := request(fmt.Sprintf("%s/entrypoints", prefix)); err != nil {
 				logger.Err(err)
-			}
-			for i := range contract.Entrypoints {
-				if err := request(fmt.Sprintf("%s/entrypoints/schema?entrypoint=%s", prefix, contract.Entrypoints[i])); err != nil {
-					logger.Err(err)
-				}
 			}
 			atomic.AddInt64(counter, 1)
 		}

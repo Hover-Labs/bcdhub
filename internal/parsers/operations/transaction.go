@@ -7,6 +7,7 @@ import (
 	"github.com/baking-bad/bcdhub/internal/bcd/tezerrors"
 	"github.com/baking-bad/bcdhub/internal/bcd/types"
 	"github.com/baking-bad/bcdhub/internal/logger"
+	"github.com/baking-bad/bcdhub/internal/models/account"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
 	modelsTypes "github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/baking-bad/bcdhub/internal/noderpc"
@@ -31,30 +32,37 @@ func NewTransaction(params *ParseParams) Transaction {
 }
 
 // Parse -
-func (p Transaction) Parse(data noderpc.Operation) (*parsers.Result, error) {
-	result := parsers.NewResult()
-
-	proto, err := p.ctx.CachedProtocolByHash(p.network, p.head.Protocol)
-	if err != nil {
-		return nil, err
+func (p Transaction) Parse(data noderpc.Operation, result *parsers.Result) error {
+	source := account.Account{
+		Network: p.network,
+		Address: data.Source,
+		Type:    modelsTypes.NewAccountType(data.Source),
 	}
 
 	tx := operation.Operation{
 		Network:      p.network,
 		Hash:         p.hash,
-		ProtocolID:   proto.ID,
+		ProtocolID:   p.protocol.ID,
 		Level:        p.head.Level,
 		Timestamp:    p.head.Timestamp,
 		Kind:         modelsTypes.NewOperationKind(data.Kind),
-		Initiator:    data.Source,
-		Source:       data.Source,
+		Initiator:    source,
+		Source:       source,
 		Fee:          data.Fee,
 		Counter:      data.Counter,
 		GasLimit:     data.GasLimit,
 		StorageLimit: data.StorageLimit,
 		Amount:       *data.Amount,
-		Destination:  *data.Destination,
-		Delegate:     data.Delegate,
+		Destination: account.Account{
+			Network: p.network,
+			Address: *data.Destination,
+			Type:    modelsTypes.NewAccountType(*data.Destination),
+		},
+		Delegate: account.Account{
+			Network: p.network,
+			Address: data.Delegate,
+			Type:    modelsTypes.NewAccountType(data.Delegate),
+		},
 		Nonce:        data.Nonce,
 		Parameters:   data.Parameters,
 		ContentIndex: p.contentIdx,
@@ -64,57 +72,91 @@ func (p Transaction) Parse(data noderpc.Operation) (*parsers.Result, error) {
 
 	parseOperationResult(data, &tx)
 
-	tx.SetBurned(p.constants)
+	tx.SetBurned(*p.protocol.Constants)
 
 	result.Operations = append(result.Operations, &tx)
 
-	script, err := p.ctx.CachedScriptBytes(tx.Network, tx.Destination, proto.SymLink)
+	if tx.Destination.Type != modelsTypes.AccountTypeContract {
+		return nil
+	}
+
+	for i := range tx.Errors {
+		if tx.Errors[i].Is("contract.non_existing_contract") {
+			return nil
+		}
+	}
+
+	script, err := p.ctx.Cache.ScriptBytes(tx.Network, tx.Destination.Address, p.protocol.SymLink)
 	if err != nil {
-		return nil, err
+		if !tx.Internal {
+			return nil
+		}
+
+		for i := range result.Contracts {
+			if tx.Destination.Address == result.Contracts[i].Account.Address {
+				switch p.protocol.SymLink {
+				case bcd.SymLinkAlpha:
+					script, err = result.Contracts[i].Alpha.Full()
+					if err != nil {
+						return err
+					}
+				case bcd.SymLinkBabylon:
+					script, err = result.Contracts[i].Babylon.Full()
+					if err != nil {
+						return err
+					}
+				default:
+					return errors.Errorf("unknown protocol symbolic link: %s", p.protocol.SymLink)
+				}
+			}
+		}
+		if script == nil {
+			return err
+		}
 	}
 	tx.Script = script
 
-	tx.AST, err = p.ctx.CachedScript(tx.Network, tx.Destination, proto.SymLink)
+	tx.AST, err = ast.NewScriptWithoutCode(script)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := setTags(p.ctx, nil, &tx); err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := p.getEntrypoint(&tx); err != nil {
-		return nil, err
+		return err
 	}
 	p.stackTrace.Add(tx)
 
 	if tx.IsApplied() {
 		if err := p.appliedHandler(data, &tx, result); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
 	if !tezerrors.HasParametersError(tx.Errors) {
 		if err := p.transferParser.Parse(tx.BigMapDiffs, p.head.Protocol, &tx); err != nil {
 			if !errors.Is(err, noderpc.InvalidNodeResponse{}) {
-				return nil, err
+				return err
 			}
-			logger.Warning().Err(err).Msg("")
+			logger.Warning().Err(err).Msg("transferParser.Parse")
 		}
 		result.TokenBalances = append(result.TokenBalances, transferParsers.UpdateTokenBalances(tx.Transfers)...)
 	}
 
 	if tx.IsApplied() {
-		ledgerResult, err := ledger.New(p.ctx.TokenBalances).Parse(&tx, p.stackTrace)
+		ledgerResult, err := ledger.New(p.ctx.TokenBalances, p.ctx.Accounts).Parse(&tx, p.stackTrace)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if ledgerResult != nil {
 			result.TokenBalances = append(result.TokenBalances, ledgerResult.TokenBalances...)
 		}
 	}
 
-	return result, nil
+	return nil
 }
 
 func (p Transaction) fillInternal(tx *operation.Operation) {
@@ -132,10 +174,6 @@ func (p Transaction) fillInternal(tx *operation.Operation) {
 }
 
 func (p Transaction) appliedHandler(item noderpc.Operation, tx *operation.Operation, result *parsers.Result) error {
-	if !bcd.IsContract(tx.Destination) || !tx.IsApplied() {
-		return nil
-	}
-
 	storageResult, err := p.storageParser.Parse(item, tx)
 	if err != nil {
 		return err
@@ -144,54 +182,17 @@ func (p Transaction) appliedHandler(item noderpc.Operation, tx *operation.Operat
 		result.Merge(storageResult)
 	}
 
-	if len(tx.DeffatedStorage) > 0 {
-		var tree ast.UntypedAST
-		if err := json.Unmarshal(tx.DeffatedStorage, &tree); err != nil {
-			return err
-		}
-		storageStrings, err := tree.GetStrings(true)
-		if err != nil {
-			return err
-		}
-		if len(storageStrings) > 0 {
-			tx.StorageStrings = storageStrings
-		}
-	}
-
-	migration, err := NewMigration().Parse(item, tx)
-	if err != nil {
-		return err
-	}
-	if migration != nil {
-		result.Migrations = append(result.Migrations, migration)
-	}
-
-	return nil
+	return NewMigration(p.ctx.Contracts).Parse(item, tx, result)
 }
 
 func (p Transaction) getEntrypoint(tx *operation.Operation) error {
-	if !bcd.IsContract(tx.Destination) {
-		return nil
-	}
-
 	if len(tx.Parameters) == 0 {
-		tx.Entrypoint = consts.DefaultEntrypoint
-		return nil
+		return tx.Entrypoint.Set(consts.DefaultEntrypoint)
 	}
 
 	params := types.NewParameters(tx.Parameters)
-	tx.Entrypoint = params.Entrypoint
-
-	var tree ast.UntypedAST
-	if err := json.Unmarshal(params.Value, &tree); err != nil {
+	if err := tx.Entrypoint.Set(params.Entrypoint); err != nil {
 		return err
-	}
-	parameterStrings, err := tree.GetStrings(true)
-	if err != nil {
-		return err
-	}
-	if len(parameterStrings) > 0 {
-		tx.ParameterStrings = parameterStrings
 	}
 
 	if !tx.IsApplied() {
@@ -212,7 +213,6 @@ func (p Transaction) getEntrypoint(tx *operation.Operation) error {
 	if node == nil {
 		return nil
 	}
-	tx.Entrypoint = entrypointName
 
-	return nil
+	return tx.Entrypoint.Set(entrypointName)
 }

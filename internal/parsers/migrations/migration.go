@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"bytes"
 	"encoding/json"
 	"time"
 
@@ -13,30 +14,28 @@ import (
 	"github.com/baking-bad/bcdhub/internal/models/protocol"
 	"github.com/baking-bad/bcdhub/internal/models/types"
 	"github.com/baking-bad/bcdhub/internal/noderpc"
-	contractParser "github.com/baking-bad/bcdhub/internal/parsers/contract"
-	"gorm.io/gorm"
+	"github.com/go-pg/pg/v10"
+	"github.com/pkg/errors"
 )
 
 // MigrationParser -
 type MigrationParser struct {
-	storage     models.GeneralRepository
-	bmdRepo     bigmapdiff.Repository
-	scriptSaver contractParser.ScriptSaver
+	storage models.GeneralRepository
+	bmdRepo bigmapdiff.Repository
 }
 
 // NewMigrationParser -
-func NewMigrationParser(storage models.GeneralRepository, bmdRepo bigmapdiff.Repository, filesDirectory string) *MigrationParser {
+func NewMigrationParser(storage models.GeneralRepository, bmdRepo bigmapdiff.Repository) *MigrationParser {
 	return &MigrationParser{
-		storage:     storage,
-		bmdRepo:     bmdRepo,
-		scriptSaver: contractParser.NewFileScriptSaver(filesDirectory),
+		storage: storage,
+		bmdRepo: bmdRepo,
 	}
 }
 
 // Parse -
-func (p *MigrationParser) Parse(script noderpc.Script, old modelsContract.Contract, previous, next protocol.Protocol, timestamp time.Time, tx *gorm.DB) error {
+func (p *MigrationParser) Parse(script noderpc.Script, old *modelsContract.Contract, previous, next protocol.Protocol, timestamp time.Time, tx pg.DBI) error {
 	if previous.SymLink == bcd.SymLinkAlpha {
-		if err := p.getUpdates(script, old, tx); err != nil {
+		if err := p.getUpdates(script, *old, tx); err != nil {
 			return err
 		}
 	}
@@ -46,30 +45,47 @@ func (p *MigrationParser) Parse(script noderpc.Script, old modelsContract.Contra
 		return err
 	}
 
-	newHash, err := contract.ComputeHash(codeBytes)
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, codeBytes); err != nil {
+		return err
+	}
+
+	newHash, err := contract.ComputeHash(buf.Bytes())
 	if err != nil {
 		return err
 	}
 
-	if err := p.scriptSaver.Save(codeBytes, contractParser.ScriptSaveContext{
-		Hash:    newHash,
-		Address: old.Address,
-		Network: old.Network.String(),
-		SymLink: next.SymLink,
-	}); err != nil {
+	var s bcd.RawScript
+	if err := json.Unmarshal(buf.Bytes(), &s); err != nil {
 		return err
 	}
 
-	if newHash == old.Hash {
-		return nil
+	contractScript := modelsContract.Script{
+		Hash:      newHash,
+		Code:      s.Code,
+		Storage:   s.Storage,
+		Parameter: s.Parameter,
+		Views:     s.Views,
+	}
+
+	if err := contractScript.Save(tx); err != nil {
+		return err
+	}
+
+	switch next.SymLink {
+	case bcd.SymLinkAlpha:
+		old.AlphaID = contractScript.ID
+	case bcd.SymLinkBabylon:
+		old.BabylonID = contractScript.ID
+	default:
+		return errors.Errorf("unknown protocol symbolic link: %s", next.SymLink)
 	}
 
 	m := &migration.Migration{
-		Network:        old.Network,
+		ContractID:     old.ID,
 		Level:          previous.EndLevel,
 		ProtocolID:     next.ID,
 		PrevProtocolID: previous.ID,
-		Address:        old.Address,
 		Timestamp:      timestamp,
 		Kind:           types.MigrationKindUpdate,
 	}
@@ -77,7 +93,7 @@ func (p *MigrationParser) Parse(script noderpc.Script, old modelsContract.Contra
 	return m.Save(tx)
 }
 
-func (p *MigrationParser) getUpdates(script noderpc.Script, contract modelsContract.Contract, tx *gorm.DB) error {
+func (p *MigrationParser) getUpdates(script noderpc.Script, contract modelsContract.Contract, tx pg.DBI) error {
 	storage, err := script.GetSettledStorage()
 	if err != nil {
 		return err
@@ -92,7 +108,7 @@ func (p *MigrationParser) getUpdates(script noderpc.Script, contract modelsContr
 		newPtr = p
 	}
 
-	bmd, err := p.bmdRepo.GetByAddress(contract.Network, contract.Address)
+	bmd, err := p.bmdRepo.GetByAddress(contract.Network, contract.Account.Address)
 	if err != nil {
 		return err
 	}
@@ -107,7 +123,7 @@ func (p *MigrationParser) getUpdates(script noderpc.Script, contract modelsContr
 		}
 	}
 
-	keys, err := p.bmdRepo.CurrentByContract(contract.Network, contract.Address)
+	keys, err := p.bmdRepo.CurrentByContract(contract.Network, contract.Account.Address)
 	if err != nil {
 		return err
 	}
@@ -116,7 +132,7 @@ func (p *MigrationParser) getUpdates(script noderpc.Script, contract modelsContr
 	}
 
 	for i := range keys {
-		if err := tx.Delete(&keys[i]).Error; err != nil {
+		if _, err := tx.Model(&keys[i]).WherePK().Delete(); err != nil {
 			return err
 		}
 

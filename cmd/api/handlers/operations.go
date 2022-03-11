@@ -12,7 +12,6 @@ import (
 	formattererror "github.com/baking-bad/bcdhub/internal/bcd/formatter/error"
 	"github.com/baking-bad/bcdhub/internal/bcd/tezerrors"
 	"github.com/baking-bad/bcdhub/internal/bcd/types"
-	"github.com/baking-bad/bcdhub/internal/fetch"
 	"github.com/baking-bad/bcdhub/internal/helpers"
 	"github.com/baking-bad/bcdhub/internal/models/bigmapdiff"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
@@ -55,8 +54,13 @@ func (ctx *Context) GetContractOperations(c *gin.Context) {
 		return
 	}
 
+	account, err := ctx.Accounts.Get(req.NetworkID(), req.Address)
+	if ctx.handleError(c, err, http.StatusNotFound) {
+		return
+	}
+
 	filters := prepareFilters(filtersReq)
-	ops, err := ctx.Operations.GetByContract(req.NetworkID(), req.Address, filtersReq.Size, filters)
+	ops, err := ctx.Operations.GetByAccount(account, filtersReq.Size, filters)
 	if ctx.handleError(c, err, 0) {
 		return
 	}
@@ -96,13 +100,7 @@ func (ctx *Context) GetOperation(c *gin.Context) {
 		return
 	}
 
-	op, err := ctx.Operations.Get(
-		map[string]interface{}{
-			"hash": req.Hash,
-		},
-		0,
-		true,
-	)
+	op, err := ctx.Operations.GetByHash(req.Hash)
 	if !ctx.Storage.IsRecordNotFound(err) && ctx.handleError(c, err, 0) {
 		return
 	}
@@ -136,7 +134,7 @@ func (ctx *Context) GetOperation(c *gin.Context) {
 
 // GetOperationErrorLocation godoc
 // @Summary Get code line where operation failed
-// @DescriptionGet code line where operation failed
+// @Description Get code line where operation failed
 // @Tags operations
 // @ID get-operation-error-location
 // @Param id path integer true "Internal BCD operation ID"
@@ -168,20 +166,74 @@ func (ctx *Context) GetOperationErrorLocation(c *gin.Context) {
 	c.SecureJSON(http.StatusOK, response)
 }
 
+// GetOperationDiff godoc
+// @Summary Get operation storage diff
+// @DescriptionGet Get operation storage diff
+// @Tags operations
+// @ID get-operation-diff
+// @Param id path integer true "Internal BCD operation ID"
+// @Accept  json
+// @Produce  json
+// @Success 200 {object} ast.MiguelNode
+// @Failure 400 {object} Error
+// @Failure 500 {object} Error
+// @Router /v1/operation/{id}/diff [get]
+func (ctx *Context) GetOperationDiff(c *gin.Context) {
+	var req getOperationByIDRequest
+	if err := c.BindUri(&req); ctx.handleError(c, err, http.StatusBadRequest) {
+		return
+	}
+	operation, err := ctx.Operations.GetByID(req.ID)
+	if ctx.handleError(c, err, 0) {
+		return
+	}
+
+	var result Operation
+	result.FromModel(operation)
+
+	if len(operation.DeffatedStorage) > 0 && (operation.IsCall() || operation.IsOrigination()) && operation.IsApplied() {
+		proto, err := ctx.Cache.ProtocolByID(operation.Network, operation.ProtocolID)
+		if ctx.handleError(c, err, 0) {
+			return
+		}
+		result.Protocol = proto.Hash
+
+		storageBytes, err := ctx.Contracts.ScriptPart(operation.Network, operation.Destination.Address, proto.SymLink, consts.STORAGE)
+		if ctx.handleError(c, err, 0) {
+			return
+		}
+
+		storageType, err := ast.NewTypedAstFromBytes(storageBytes)
+		if ctx.handleError(c, err, 0) {
+			return
+		}
+
+		bmd, err := ctx.BigMapDiffs.GetForOperation(operation.ID)
+		if ctx.handleError(c, err, 0) {
+			return
+		}
+
+		if err := ctx.setStorageDiff(operation.DestinationID, operation.DeffatedStorage, &result, bmd, storageType); ctx.handleError(c, err, 0) {
+			return
+		}
+	}
+	c.SecureJSON(http.StatusOK, result.StorageDiff)
+}
+
 func (ctx *Context) getOperationFromMempool(hash string) *Operation {
 	var wg sync.WaitGroup
-	var opCh = make(chan *Operation, len(ctx.TzKTServices))
+	var opCh = make(chan *Operation, len(ctx.MempoolServices))
 
 	defer close(opCh)
 
-	for network := range ctx.TzKTServices {
+	for network := range ctx.MempoolServices {
 		wg.Add(1)
 		go ctx.getOperation(network, hash, opCh, &wg)
 	}
 
 	wg.Wait()
 
-	for i := 0; i < len(ctx.TzKTServices); i++ {
+	for i := 0; i < len(ctx.MempoolServices); i++ {
 		if op := <-opCh; op != nil {
 			return op
 		}
@@ -193,24 +245,26 @@ func (ctx *Context) getOperationFromMempool(hash string) *Operation {
 func (ctx *Context) getOperation(network modelTypes.Network, hash string, ops chan<- *Operation, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	api, err := ctx.GetTzKTService(network)
+	api, err := ctx.GetMempoolService(network)
 	if err != nil {
 		ops <- nil
 		return
 	}
 
-	res, err := api.GetMempool(hash)
+	res, err := api.GetByHash(hash)
 	if err != nil {
 		ops <- nil
 		return
 	}
 
-	if len(res) == 0 {
+	switch {
+	case len(res.Originations) > 0:
+		ops <- ctx.prepareMempoolOrigination(network, res.Originations[0])
+	case len(res.Transactions) > 0:
+		ops <- ctx.prepareMempoolTransaction(network, res.Transactions[0])
+	default:
 		ops <- nil
-		return
 	}
-
-	ops <- ctx.prepareMempoolOperation(res[0], network, string(res[0].Raw))
 }
 
 func prepareFilters(req operationsRequest) map[string]interface{} {
@@ -257,39 +311,45 @@ func (ctx *Context) prepareOperation(operation operation.Operation, bmd []bigmap
 	var op Operation
 	op.FromModel(operation)
 
-	op.SourceAlias = ctx.CachedAlias(operation.Network, operation.Source)
-	op.DestinationAlias = ctx.CachedAlias(operation.Network, operation.Destination)
+	op.SourceAlias = operation.Source.Alias
+	op.DestinationAlias = operation.Destination.Alias
 
-	proto, err := ctx.CachedProtocolByID(operation.Network, operation.ProtocolID)
+	proto, err := ctx.Cache.ProtocolByID(operation.Network, operation.ProtocolID)
 	if err != nil {
 		return op, err
 	}
 	op.Protocol = proto.Hash
 
-	if err := formatErrors(operation.Errors, &op); err != nil {
-		return op, err
-	}
+	if bcd.IsContract(op.Destination) {
+		if err := formatErrors(operation.Errors, &op); err != nil {
+			return op, err
+		}
 
-	script, err := ctx.getScript(operation.Network, op.Destination, proto.SymLink)
-	if err != nil {
-		return op, err
-	}
+		script, err := ctx.getScript(operation.Network, op.Destination, proto.SymLink)
+		if err != nil {
+			return op, err
+		}
 
-	if withStorageDiff {
-		if len(operation.DeffatedStorage) > 0 && (operation.IsCall() || operation.IsOrigination()) && operation.IsApplied() {
-			if err := ctx.setStorageDiff(op.Destination, operation.DeffatedStorage, &op, bmd, script); err != nil {
+		if withStorageDiff {
+			storageType, err := script.StorageType()
+			if err != nil {
 				return op, err
 			}
+			if len(operation.DeffatedStorage) > 0 && (operation.IsCall() || operation.IsOrigination()) && operation.IsApplied() {
+				if err := ctx.setStorageDiff(operation.DestinationID, operation.DeffatedStorage, &op, bmd, storageType); err != nil {
+					return op, err
+				}
+			}
 		}
-	}
 
-	if !operation.IsTransaction() {
-		return op, nil
-	}
+		if !operation.IsTransaction() {
+			return op, nil
+		}
 
-	if bcd.IsContract(op.Destination) && operation.IsCall() && !tezerrors.HasParametersError(op.Errors) {
-		if err := setParameters(operation.Parameters, script, &op); err != nil {
-			return op, err
+		if operation.IsCall() && !tezerrors.HasParametersError(op.Errors) {
+			if err := setParameters(operation.Parameters, script, &op); err != nil {
+				return op, err
+			}
 		}
 	}
 
@@ -368,12 +428,8 @@ func setParatemetersWithType(params *types.Parameters, script *ast.Script, op *O
 	return nil
 }
 
-func (ctx *Context) setStorageDiff(address string, storage []byte, op *Operation, bmd []bigmapdiff.BigMapDiff, script *ast.Script) error {
-	storageType, err := script.StorageType()
-	if err != nil {
-		return err
-	}
-	storageDiff, err := ctx.getStorageDiff(bmd, address, storage, storageType, op)
+func (ctx *Context) setStorageDiff(destinationID int64, storage []byte, op *Operation, bmd []bigmapdiff.BigMapDiff, storageType *ast.TypedAst) error {
+	storageDiff, err := ctx.getStorageDiff(destinationID, bmd, storage, storageType, op)
 	if err != nil {
 		return err
 	}
@@ -381,13 +437,18 @@ func (ctx *Context) setStorageDiff(address string, storage []byte, op *Operation
 	return nil
 }
 
-func (ctx *Context) getStorageDiff(bmd []bigmapdiff.BigMapDiff, address string, storage []byte, storageType *ast.TypedAst, op *Operation) (interface{}, error) {
+func (ctx *Context) getStorageDiff(destinationID int64, bmd []bigmapdiff.BigMapDiff, storage []byte, storageType *ast.TypedAst, op *Operation) (*ast.MiguelNode, error) {
 	currentStorage := &ast.TypedAst{
 		Nodes: []ast.Node{ast.Copy(storageType.Nodes[0])},
 	}
 	var prevStorage *ast.TypedAst
 
-	prev, err := ctx.Operations.Last(modelTypes.NewNetwork(op.Network), address, op.ID)
+	prev, err := ctx.Operations.Last(
+		map[string]interface{}{
+			"operation.network": modelTypes.NewNetwork(op.Network),
+			"destination_id":    destinationID,
+			"status":            modelTypes.OperationStatusApplied,
+		}, op.ID)
 	if err == nil {
 		prevStorage = &ast.TypedAst{
 			Nodes: []ast.Node{ast.Copy(storageType.Nodes[0])},
@@ -399,8 +460,14 @@ func (ctx *Context) getStorageDiff(bmd []bigmapdiff.BigMapDiff, address string, 
 		}
 
 		if len(prev.DeffatedStorage) > 0 {
-			if err := prepareStorage(prevStorage, prev.DeffatedStorage, prevBmd); err != nil {
-				return nil, err
+			if len(prevBmd) > 0 {
+				if err := prepareStorage(prevStorage, prev.DeffatedStorage, prevBmd); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := prepareStorage(prevStorage, prev.DeffatedStorage, bmd); err != nil {
+					return nil, err
+				}
 			}
 		}
 	} else if !ctx.Storage.IsRecordNotFound(err) {
@@ -438,11 +505,11 @@ func getEnrichStorage(storageType *ast.TypedAst, bmd []bigmapdiff.BigMapDiff) er
 }
 
 func (ctx *Context) getErrorLocation(operation operation.Operation, window int) (GetErrorLocationResponse, error) {
-	proto, err := ctx.CachedProtocolByID(operation.Network, operation.ProtocolID)
+	proto, err := ctx.Cache.ProtocolByID(operation.Network, operation.ProtocolID)
 	if err != nil {
 		return GetErrorLocationResponse{}, err
 	}
-	code, err := fetch.ContractBySymLink(operation.Network, operation.Destination, proto.SymLink, ctx.SharePath)
+	code, err := ctx.getScriptBytes(operation.Network, operation.Destination.Address, proto.SymLink)
 	if err != nil {
 		return GetErrorLocationResponse{}, err
 	}

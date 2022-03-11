@@ -10,10 +10,6 @@ api:
 	docker-compose up -d elastic db
 	cd cmd/api && go run .
 
-graphql:
-	docker-compose up -d elastic db
-	cd cmd/graphql && go run .
-
 api-tester:
 	docker-compose up -d elastic db
 	cd scripts/api_tester && go run .
@@ -77,8 +73,8 @@ ifeq (,$(wildcard $(LATEST_DUMP)))
 	aws s3 cp --profile bcd s3://bcd-db-snaps/$(BACKUP) $(LATEST_DUMP)
 endif
 
-	docker-compose exec -T db dropdb -U $(POSTGRES_USER) --if-exists indexer
-	gunzip -dc $(LATEST_DUMP) | docker-compose exec -T db psql -U $(POSTGRES_USER) -v ON_ERROR_STOP=on bcd
+	docker-compose exec -T db dropdb -U $(POSTGRES_USER) --if-exists $(POSTGRES_DB)
+	gunzip -dc $(LATEST_DUMP) | docker-compose exec -T db psql -U $(POSTGRES_USER) -v ON_ERROR_STOP=on $(POSTGRES_DB)
 	rm $(LATEST_DUMP)
 
 s3-es-restore:
@@ -101,7 +97,7 @@ endif
 
 s3-db-snapshot:
 	echo "Database snapshot..."
-	docker-compose exec db pg_dump indexer --create -U $(POSTGRES_USER) | gzip -c > $(LATEST_DUMP)	
+	docker-compose exec db pg_dump $(POSTGRES_DB) --create -U $(POSTGRES_USER) | gzip -c > $(LATEST_DUMP)	
 	aws s3 mv --profile bcd $(LATEST_DUMP) s3://bcd-db-snaps/dump_latest.gz
 
 s3-es-snapshot:
@@ -147,62 +143,32 @@ docs:
 	# sudo cp swag /usr/bin/swag
 	cd cmd/api && swag init --parseDependency --parseInternal --parseDepth 2
 
-images:
-	docker-compose build
-
-stable-images:
-	TAG=$$(cat version.json | grep version | awk -F\" '{ print $$4 }' |  cut -d '.' -f1-2) docker-compose build --parallel
-
-stable-pull:
-	TAG=$$(cat version.json | grep version | awk -F\" '{ print $$4 }' |  cut -d '.' -f1-2) docker-compose pull
-
 stable:
-	TAG=$$(cat version.json | grep version | awk -F\" '{ print $$4 }' |  cut -d '.' -f1-2) docker-compose up -d api metrics indexer
-
-latest:
-	docker-compose up -d
-
-upgrade:
-	docker-compose down
-	STABLE_TAG=$$(cat version.json | grep version | awk -F\" '{ print $$4 }' |  cut -d '.' -f1-2)
-	TAG=$$STABLE_TAG $(MAKE) es-reset
-	TAG=$$STABLE_TAG docker-compose up -d db api
-
-restart:
-	docker-compose restart api metrics indexer
-
-release:
-	BCDHUB_VERSION=$$(cat version.json | grep version | awk -F\" '{ print $$4 }') && git tag $$BCDHUB_VERSION && git push origin $$BCDHUB_VERSION
+	TAG=master docker-compose up -d api metrics indexer
 
 db-dump:
-	docker-compose exec db pg_dump -c bcd > dump_`date +%d-%m-%Y"_"%H_%M_%S`.sql
+	docker-compose exec db pg_dump -c $(POSTGRES_DB) > dump_`date +%d-%m-%Y"_"%H_%M_%S`.sql
 
 db-restore:
-	docker-compose exec db psql --username $$POSTGRES_USER -v ON_ERROR_STOP=on bcd < $(BACKUP)
+	docker-compose exec -T db psql --username $(POSTGRES_USER) -v ON_ERROR_STOP=on $(POSTGRES_DB) < $(BACKUP)
 
 ps:
 	docker ps --format "table {{.Names}}\t{{.RunningFor}}\t{{.Status}}\t{{.Ports}}"
 
-sandbox-images:
-	docker-compose -f docker-compose.sandbox.yml pull
-
-sandbox:
-	COMPOSE_PROJECT_NAME=bcdbox docker-compose -f docker-compose.sandbox.yml up -d elastic db api indexer metrics gui
+sandbox-pull:
+	TAG=4.1.0 docker-compose -f docker-compose.flextesa.yml pull
 
 flextesa-sandbox:
-	COMPOSE_PROJECT_NAME=bcdbox docker-compose -f docker-compose.sandbox.yml up -d
+	COMPOSE_PROJECT_NAME=bcdbox TAG=4.1.0 docker-compose -f docker-compose.flextesa.yml up -d
 
 sandbox-down:
-	COMPOSE_PROJECT_NAME=bcdbox docker-compose -f docker-compose.sandbox.yml down
+	COMPOSE_PROJECT_NAME=bcdbox docker-compose -f docker-compose.flextesa.yml down
 
 sandbox-clear:
-	COMPOSE_PROJECT_NAME=bcdbox docker-compose -f docker-compose.sandbox.yml down -v
-
-gateway-images:
-	docker-compose -f docker-compose.gateway.yml pull
+	COMPOSE_PROJECT_NAME=bcdbox docker-compose -f docker-compose.flextesa.yml down -v
 
 gateway:
-	COMPOSE_PROJECT_NAME=bcdhub docker-compose -f docker-compose.gateway.yml up -d
+	COMPOSE_PROJECT_NAME=bcdhub TAG=4.1.0 docker-compose -f docker-compose.gateway.yml up -d
 
 gateway-down:
 	COMPOSE_PROJECT_NAME=bcdhub docker-compose -f docker-compose.gateway.yml down

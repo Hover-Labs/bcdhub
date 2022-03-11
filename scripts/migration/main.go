@@ -25,17 +25,9 @@ var migrationsList = []migrations.Migration{
 	&migrations.NFTMetadata{},
 	&migrations.TokenMetadataUnknown{},
 	&migrations.DefaultEntrypoint{},
-	&migrations.TZIPUpdatedAt{},
-	&migrations.ProtocolField{},
-	&migrations.MigrationKind{},
-	&migrations.DropAmountStringColumns{},
-	&migrations.FixZeroID{},
-	&migrations.EnumToSmallInt{},
-	&migrations.OperationKindToEnum{},
-	&migrations.BigMapActionToEnum{},
-	&migrations.TagsToInt{},
-	&migrations.DropAliasesColumns{},
 	&migrations.FixLostSearchContracts{},
+	&migrations.FixEntrypointSearch{},
+	&migrations.FindLostContracts{},
 }
 
 func main() {
@@ -54,8 +46,7 @@ func main() {
 	start := time.Now()
 
 	ctx := config.NewContext(
-		config.WithShare(cfg.SharePath),
-		config.WithStorage(cfg.Storage, "migrations", 0),
+		config.WithStorage(cfg.Storage, "migrations", 0, cfg.Scripts.Connections.Open, cfg.Scripts.Connections.Idle),
 		config.WithRPC(cfg.RPC),
 		config.WithConfigCopy(cfg),
 		config.WithLoadErrorDescriptions(),

@@ -129,9 +129,14 @@ func (ctx *Context) GetFA12OperationsForAddress(c *gin.Context) {
 		contracts = strings.Split(ctxReq.Contracts, ",")
 	}
 
+	acc, err := ctx.Accounts.Get(req.NetworkID(), req.Address)
+	if ctx.handleError(c, err, http.StatusNotFound) {
+		return
+	}
+
 	transfers, err := ctx.Domains.Transfers(transfer.GetContext{
 		Network:   req.NetworkID(),
-		Address:   req.Address,
+		AccountID: acc.ID,
 		Contracts: contracts,
 		Start:     ctxReq.Start,
 		End:       ctxReq.End,
@@ -156,6 +161,7 @@ func (ctx *Context) GetFA12OperationsForAddress(c *gin.Context) {
 // @Param period query string true "One of periods"  Enums(year, month, week, day)
 // @Param contract path string true "KT address" minlength(36) maxlength(36)
 // @Param token_id query int true "Token ID" minimum(0)
+// @Param slug query string true "DApp slug"
 // @Accept json
 // @Produce  json
 // @Success 200 {object} SeriesFloat
@@ -194,11 +200,11 @@ func (ctx *Context) contractToTokens(contracts []contract.Contract, network type
 			Network:       contracts[i].Network.String(),
 			Level:         contracts[i].Level,
 			Timestamp:     contracts[i].Timestamp,
-			Address:       contracts[i].Address,
-			Manager:       contracts[i].Manager,
-			Delegate:      contracts[i].Delegate,
-			Alias:         ctx.CachedAlias(contracts[i].Network, contracts[i].Address),
-			DelegateAlias: ctx.CachedAlias(contracts[i].Network, contracts[i].Delegate),
+			Address:       contracts[i].Account.Address,
+			Manager:       contracts[i].Manager.Address,
+			Delegate:      contracts[i].Delegate.Address,
+			Alias:         contracts[i].Account.Alias,
+			DelegateAlias: contracts[i].Delegate.Alias,
 			LastAction:    contracts[i].LastAction,
 			TxCount:       contracts[i].TxCount,
 		}
@@ -357,11 +363,11 @@ func (ctx *Context) addSupply(metadata []tokenmetadata.TokenMetadata) ([]Token, 
 		}
 		t.Supply = supply
 
-		transfered, err := ctx.Transfers.GetTransfered(token.Network, token.Contract, token.TokenID)
+		transferred, err := ctx.Transfers.GetTransfered(token.Network, token.Contract, token.TokenID)
 		if err != nil {
 			return nil, err
 		}
-		t.Transfered = transfered
+		t.Transferred = transferred
 
 		tokens = append(tokens, t)
 	}
@@ -400,7 +406,7 @@ func (ctx *Context) GetTokenHolders(c *gin.Context) {
 	}
 	result := make(map[string]string)
 	for i := range balances {
-		result[balances[i].Address] = balances[i].Balance.String()
+		result[balances[i].Account.Address] = balances[i].Balance.String()
 	}
 
 	c.SecureJSON(http.StatusOK, result)

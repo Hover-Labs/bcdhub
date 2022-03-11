@@ -1,16 +1,21 @@
 package services
 
-import "github.com/baking-bad/bcdhub/internal/models"
+import (
+	"context"
+	"sync"
+
+	"github.com/baking-bad/bcdhub/internal/models"
+)
 
 // Service -
 type Service interface {
 	Init() error
-	Start()
+	Start(ctx context.Context)
 	Close() error
 }
 
 // Handler -
 type Handler interface {
-	Chunk(lastID, size int64) ([]models.Model, error)
-	Handle(items []models.Model) error
+	Chunk(lastID int64, size int) ([]models.Model, error)
+	Handle(ctx context.Context, items []models.Model, wg *sync.WaitGroup) error
 }

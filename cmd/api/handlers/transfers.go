@@ -41,6 +41,7 @@ func (ctx *Context) GetContractTransfers(c *gin.Context) {
 		Size:      req.Size,
 		Offset:    req.Offset,
 		TokenID:   req.TokenID,
+		AccountID: -1,
 	})
 	if ctx.handleError(c, err, 0) {
 		return
@@ -67,10 +68,10 @@ func (ctx *Context) transfersPostprocessing(transfers domains.TransfersResponse,
 
 		response.Transfers[i] = TransferFromModel(transfers.Transfers[i])
 		response.Transfers[i].Token = &token
-		response.Transfers[i].Alias = ctx.CachedAlias(transfers.Transfers[i].Network, transfers.Transfers[i].Contract)
-		response.Transfers[i].InitiatorAlias = ctx.CachedAlias(transfers.Transfers[i].Network, transfers.Transfers[i].Initiator)
-		response.Transfers[i].FromAlias = ctx.CachedAlias(transfers.Transfers[i].Network, transfers.Transfers[i].From)
-		response.Transfers[i].ToAlias = ctx.CachedAlias(transfers.Transfers[i].Network, transfers.Transfers[i].To)
+		response.Transfers[i].Alias = ctx.Cache.Alias(transfers.Transfers[i].Network, transfers.Transfers[i].Contract)
+		response.Transfers[i].InitiatorAlias = transfers.Transfers[i].Initiator.Alias
+		response.Transfers[i].FromAlias = transfers.Transfers[i].From.Alias
+		response.Transfers[i].ToAlias = transfers.Transfers[i].To.Alias
 	}
 	return
 }

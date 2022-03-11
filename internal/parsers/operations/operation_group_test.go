@@ -1,6 +1,7 @@
 package operations
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"testing"
@@ -10,26 +11,30 @@ import (
 	"github.com/baking-bad/bcdhub/internal/cache"
 	"github.com/baking-bad/bcdhub/internal/config"
 	"github.com/baking-bad/bcdhub/internal/models"
+	"github.com/baking-bad/bcdhub/internal/models/account"
 	"github.com/baking-bad/bcdhub/internal/models/bigmapaction"
 	"github.com/baking-bad/bcdhub/internal/models/bigmapdiff"
 	modelContract "github.com/baking-bad/bcdhub/internal/models/contract"
+	cm "github.com/baking-bad/bcdhub/internal/models/contract_metadata"
+	"github.com/baking-bad/bcdhub/internal/models/global_constant"
 	mock_general "github.com/baking-bad/bcdhub/internal/models/mock"
+	mock_accounts "github.com/baking-bad/bcdhub/internal/models/mock/account"
 	mock_bmd "github.com/baking-bad/bcdhub/internal/models/mock/bigmapdiff"
 	mock_block "github.com/baking-bad/bcdhub/internal/models/mock/block"
 	mock_contract "github.com/baking-bad/bcdhub/internal/models/mock/contract"
+	mock_cm "github.com/baking-bad/bcdhub/internal/models/mock/contract_metadata"
 	mock_proto "github.com/baking-bad/bcdhub/internal/models/mock/protocol"
 	mock_token_balance "github.com/baking-bad/bcdhub/internal/models/mock/tokenbalance"
-	mock_tzip "github.com/baking-bad/bcdhub/internal/models/mock/tzip"
 	"github.com/baking-bad/bcdhub/internal/models/operation"
 	"github.com/baking-bad/bcdhub/internal/models/protocol"
 	"github.com/baking-bad/bcdhub/internal/models/tokenbalance"
 	"github.com/baking-bad/bcdhub/internal/models/transfer"
 	"github.com/baking-bad/bcdhub/internal/models/types"
-	"github.com/baking-bad/bcdhub/internal/models/tzip"
 	"github.com/baking-bad/bcdhub/internal/noderpc"
 	"github.com/baking-bad/bcdhub/internal/parsers"
-	"github.com/baking-bad/bcdhub/internal/parsers/contract"
+	"github.com/go-pg/pg/v10"
 	"github.com/golang/mock/gomock"
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/shopspring/decimal"
 )
 
@@ -44,6 +49,10 @@ func TestGroup_Parse(t *testing.T) {
 	defer ctrlBmdRepo.Finish()
 	bmdRepo := mock_bmd.NewMockRepository(ctrlBmdRepo)
 
+	ctrlAccountsRepo := gomock.NewController(t)
+	defer ctrlAccountsRepo.Finish()
+	accountsRepo := mock_accounts.NewMockRepository(ctrlAccountsRepo)
+
 	ctrlBlockRepo := gomock.NewController(t)
 	defer ctrlBlockRepo.Finish()
 	blockRepo := mock_block.NewMockRepository(ctrlBlockRepo)
@@ -52,13 +61,17 @@ func TestGroup_Parse(t *testing.T) {
 	defer ctrlProtoRepo.Finish()
 	protoRepo := mock_proto.NewMockRepository(ctrlProtoRepo)
 
-	ctrlTzipRepo := gomock.NewController(t)
-	defer ctrlTzipRepo.Finish()
-	tzipRepo := mock_tzip.NewMockRepository(ctrlTzipRepo)
+	ctrlCMRepo := gomock.NewController(t)
+	defer ctrlCMRepo.Finish()
+	cmRepo := mock_cm.NewMockRepository(ctrlCMRepo)
 
 	ctrlContractRepo := gomock.NewController(t)
 	defer ctrlContractRepo.Finish()
 	contractRepo := mock_contract.NewMockRepository(ctrlContractRepo)
+
+	ctrlScriptRepo := gomock.NewController(t)
+	defer ctrlScriptRepo.Finish()
+	scriptRepo := mock_contract.NewMockScriptRepository(ctrlScriptRepo)
 
 	ctrlTokenBalanceRepo := gomock.NewController(t)
 	defer ctrlTokenBalanceRepo.Finish()
@@ -68,22 +81,50 @@ func TestGroup_Parse(t *testing.T) {
 	defer ctrlRPC.Finish()
 	rpc := noderpc.NewMockINode(ctrlRPC)
 
-	ctrlScriptSaver := gomock.NewController(t)
-	defer ctrlScriptSaver.Finish()
-	scriptSaver := contract.NewMockScriptSaver(ctrlScriptSaver)
-
-	scriptSaver.
+	rpc.
 		EXPECT().
-		Save(gomock.Any(), gomock.Any()).
-		Return(nil).AnyTimes()
-
-	tzipRepo.
+		GetScriptJSON("KT1PWx2mnDueood7fEmfbBDKx1D9BAnnXitn", int64(0)).
+		DoAndReturn(readRPCScript).
+		AnyTimes()
+	rpc.
 		EXPECT().
-		GetWithEvents(gomock.Any()).
-		Return(make([]tzip.TZIP, 0), nil).
+		GetScriptJSON("KT1K9gCRgaLRFKTErYt1wVxA3Frb9FjasjTV", int64(0)).
+		DoAndReturn(readRPCScript).
+		AnyTimes()
+	rpc.
+		EXPECT().
+		GetScriptJSON("KT19at7rQUvyjxnZ2fBv7D9zc8rkyG7gAoU8", int64(0)).
+		DoAndReturn(readRPCScript).
+		AnyTimes()
+	rpc.
+		EXPECT().
+		GetScriptJSON("KT1AafHA1C1vk959wvHWBispY9Y2f3fxBUUo", int64(0)).
+		DoAndReturn(readRPCScript).
+		AnyTimes()
+	rpc.
+		EXPECT().
+		GetScriptJSON("KT1LN4LPSqTMS7Sd2CJw4bbDGRkMv2t68Fy9", int64(0)).
+		DoAndReturn(readRPCScript).
+		AnyTimes()
+	rpc.
+		EXPECT().
+		GetScriptJSON("KT1S95Dyj2QrJpSnAbHRUSUZr7DhuFqssrog", int64(0)).
+		DoAndReturn(readRPCScript).
 		AnyTimes()
 
-	tzipRepo.
+	cmRepo.
+		EXPECT().
+		GetWithEvents(gomock.Any()).
+		Return(make([]cm.ContractMetadata, 0), nil).
+		AnyTimes()
+
+	cmRepo.
+		EXPECT().
+		Events(gomock.Any(), gomock.Any()).
+		Return(make(cm.Events, 0), nil).
+		AnyTimes()
+
+	cmRepo.
 		EXPECT().
 		Get(gomock.Any(), gomock.Any()).
 		Return(nil, nil).
@@ -97,13 +138,25 @@ func TestGroup_Parse(t *testing.T) {
 
 	contractRepo.
 		EXPECT().
-		GetProjectIDByHash(gomock.Any()).
-		Return("", nil).
+		Script(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(readTestScriptModel).
+		AnyTimes()
+
+	contractRepo.
+		EXPECT().
+		ScriptPart(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(readTestScriptPart).
+		AnyTimes()
+
+	scriptRepo.
+		EXPECT().
+		ByHash(gomock.Any()).
+		Return(modelContract.Script{}, pg.ErrNoRows).
 		AnyTimes()
 
 	generalRepo.
 		EXPECT().
-		Save(gomock.AssignableToTypeOf([]models.Model{})).
+		Save(context.Background(), gomock.AssignableToTypeOf([]models.Model{})).
 		Return(nil).
 		AnyTimes()
 
@@ -201,7 +254,7 @@ func TestGroup_Parse(t *testing.T) {
 		Return(protocol.Protocol{
 			Hash:    "PsddFKi32cMJ2qPjf43Qv5GDWLDPZb3T3bF6fLKiF5HtvHNU7aP",
 			Network: types.Mainnet,
-			SymLink: bcd.SymLinkBabylon,
+			SymLink: bcd.SymLinkAlpha,
 			ID:      2,
 		}, nil).
 		AnyTimes()
@@ -236,6 +289,20 @@ func TestGroup_Parse(t *testing.T) {
 
 	protoRepo.
 		EXPECT().
+		Get(
+			gomock.Eq(types.Hangzhounet),
+			gomock.Eq("PtHangzHogokSuiMHemCuowEavgYTP8J5qQ9fQS793MHYFpCY3r"),
+			gomock.Eq(int64(-1))).
+		Return(protocol.Protocol{
+			Hash:    "PtHangzHogokSuiMHemCuowEavgYTP8J5qQ9fQS793MHYFpCY3r",
+			Network: types.Hangzhounet,
+			SymLink: bcd.SymLinkBabylon,
+			ID:      5,
+		}, nil).
+		AnyTimes()
+
+	protoRepo.
+		EXPECT().
 		GetByID(gomock.Eq(int64(0))).
 		Return(protocol.Protocol{
 			Hash:    "PsDELPH1Kxsxt8f9eWbxQeRxkjfbxoqM52jvs5Y5fBxWWh4ifpo",
@@ -261,7 +328,7 @@ func TestGroup_Parse(t *testing.T) {
 		Return(protocol.Protocol{
 			Hash:    "PsddFKi32cMJ2qPjf43Qv5GDWLDPZb3T3bF6fLKiF5HtvHNU7aP",
 			Network: types.Mainnet,
-			SymLink: bcd.SymLinkBabylon,
+			SymLink: bcd.SymLinkAlpha,
 			ID:      2,
 		}, nil).
 		AnyTimes()
@@ -288,6 +355,17 @@ func TestGroup_Parse(t *testing.T) {
 		}, nil).
 		AnyTimes()
 
+	protoRepo.
+		EXPECT().
+		GetByID(gomock.Eq(int64(5))).
+		Return(protocol.Protocol{
+			Hash:    "PtHangzHogokSuiMHemCuowEavgYTP8J5qQ9fQS793MHYFpCY3r",
+			Network: types.Hangzhounet,
+			SymLink: bcd.SymLinkBabylon,
+			ID:      5,
+		}, nil).
+		AnyTimes()
+
 	tests := []struct {
 		name       string
 		rpc        noderpc.INode
@@ -302,14 +380,19 @@ func TestGroup_Parse(t *testing.T) {
 			name: "opToHHcqFhRTQWJv2oTGAtywucj9KM1nDnk5eHsEETYJyvJLsa5",
 			rpc:  rpc,
 			ctx: &config.Context{
-				Storage:       generalRepo,
-				Contracts:     contractRepo,
-				BigMapDiffs:   bmdRepo,
-				Blocks:        blockRepo,
-				Protocols:     protoRepo,
-				TZIP:          tzipRepo,
-				TokenBalances: tbRepo,
-				Cache:         cache.NewCache(),
+				Storage:          generalRepo,
+				Contracts:        contractRepo,
+				BigMapDiffs:      bmdRepo,
+				Blocks:           blockRepo,
+				Protocols:        protoRepo,
+				ContractMetadata: cmRepo,
+				TokenBalances:    tbRepo,
+				Scripts:          scriptRepo,
+				Cache: cache.NewCache(
+					map[types.Network]noderpc.INode{
+						types.Mainnet: rpc,
+					}, blockRepo, accountsRepo, contractRepo, protoRepo, cmRepo, bluemonday.UGCPolicy(),
+				),
 			},
 			paramsOpts: []ParseParamsOption{
 				WithHead(noderpc.Header{
@@ -319,6 +402,17 @@ func TestGroup_Parse(t *testing.T) {
 					ChainID:   "NetXdQprcVkpaWU",
 				}),
 				WithNetwork(types.Mainnet),
+				WithProtocol(&protocol.Protocol{
+					Constants: &protocol.Constants{
+						CostPerByte:                  1000,
+						HardGasLimitPerOperation:     400000,
+						HardStorageLimitPerOperation: 60000,
+						TimeBetweenBlocks:            60,
+					},
+					Hash:    "PsDELPH1Kxsxt8f9eWbxQeRxkjfbxoqM52jvs5Y5fBxWWh4ifpo",
+					Network: types.Mainnet,
+					SymLink: bcd.SymLinkBabylon,
+				}),
 			},
 			filename: "./data/rpc/opg/opToHHcqFhRTQWJv2oTGAtywucj9KM1nDnk5eHsEETYJyvJLsa5.json",
 			want:     parsers.NewResult(),
@@ -326,15 +420,20 @@ func TestGroup_Parse(t *testing.T) {
 			name: "opJXaAMkBrAbd1XFd23kS8vXiw63tU4rLUcLrZgqUCpCbhT1Pn9",
 			rpc:  rpc,
 			ctx: &config.Context{
-				Storage:       generalRepo,
-				Contracts:     contractRepo,
-				BigMapDiffs:   bmdRepo,
-				Blocks:        blockRepo,
-				Protocols:     protoRepo,
-				TZIP:          tzipRepo,
-				TokenBalances: tbRepo,
-				Cache:         cache.NewCache(),
-				SharePath:     "./test",
+				Storage:          generalRepo,
+				Contracts:        contractRepo,
+				Accounts:         accountsRepo,
+				BigMapDiffs:      bmdRepo,
+				Blocks:           blockRepo,
+				Protocols:        protoRepo,
+				ContractMetadata: cmRepo,
+				TokenBalances:    tbRepo,
+				Scripts:          scriptRepo,
+				Cache: cache.NewCache(
+					map[types.Network]noderpc.INode{
+						types.Mainnet: rpc,
+					}, blockRepo, accountsRepo, contractRepo, protoRepo, cmRepo, bluemonday.UGCPolicy(),
+				),
 			},
 			paramsOpts: []ParseParamsOption{
 				WithHead(noderpc.Header{
@@ -343,11 +442,17 @@ func TestGroup_Parse(t *testing.T) {
 					Level:     1068669,
 					ChainID:   "test",
 				}),
-				WithConstants(protocol.Constants{
-					CostPerByte:                  1000,
-					HardGasLimitPerOperation:     1040000,
-					HardStorageLimitPerOperation: 60000,
-					TimeBetweenBlocks:            60,
+				WithProtocol(&protocol.Protocol{
+					Constants: &protocol.Constants{
+						CostPerByte:                  1000,
+						HardGasLimitPerOperation:     1040000,
+						HardStorageLimitPerOperation: 60000,
+						TimeBetweenBlocks:            60,
+					},
+					Hash:    "PsDELPH1Kxsxt8f9eWbxQeRxkjfbxoqM52jvs5Y5fBxWWh4ifpo",
+					Network: types.Mainnet,
+					ID:      1,
+					SymLink: bcd.SymLinkBabylon,
 				}),
 				WithNetwork(types.Mainnet),
 			},
@@ -360,37 +465,67 @@ func TestGroup_Parse(t *testing.T) {
 			want: &parsers.Result{
 				Operations: []*operation.Operation{
 					{
-						Kind:            types.OperationKindTransaction,
-						Source:          "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
-						Fee:             37300,
-						Counter:         5791164,
-						GasLimit:        369423,
-						StorageLimit:    90,
-						Destination:     "KT1S5iPRQ612wcNm6mXDqDhTNegGFcvTV7vM",
-						Status:          types.OperationStatusApplied,
-						Level:           1068669,
-						Network:         types.Mainnet,
-						Hash:            "opJXaAMkBrAbd1XFd23kS8vXiw63tU4rLUcLrZgqUCpCbhT1Pn9",
-						Entrypoint:      "transfer",
-						Timestamp:       timestamp,
-						Burned:          70000,
-						Initiator:       "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+						Kind: types.OperationKindTransaction,
+						Source: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+							Type:    types.AccountTypeTz,
+						},
+						Fee:          37300,
+						Counter:      5791164,
+						GasLimit:     369423,
+						StorageLimit: 90,
+						Destination: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1S5iPRQ612wcNm6mXDqDhTNegGFcvTV7vM",
+							Type:    types.AccountTypeContract,
+						},
+						Delegate: account.Account{
+							Network: types.Mainnet,
+						},
+						Status:  types.OperationStatusApplied,
+						Level:   1068669,
+						Network: types.Mainnet,
+						Hash:    "opJXaAMkBrAbd1XFd23kS8vXiw63tU4rLUcLrZgqUCpCbhT1Pn9",
+						Entrypoint: types.NullString{
+							Str:   "transfer",
+							Valid: true,
+						},
+						Timestamp: timestamp,
+						Burned:    70000,
+						Initiator: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+							Type:    types.AccountTypeTz,
+						},
 						ProtocolID:      1,
 						Parameters:      []byte("{\"entrypoint\":\"default\",\"value\":{\"prim\":\"Right\",\"args\":[{\"prim\":\"Left\",\"args\":[{\"prim\":\"Right\",\"args\":[{\"prim\":\"Right\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"string\":\"tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq\"},{\"prim\":\"Pair\",\"args\":[{\"string\":\"tz1invbJv3AEm55ct7QF2dVbWZuaDekssYkV\"},{\"int\":\"8010000\"}]}]}]}]}]}]}}"),
 						DeffatedStorage: []byte("{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[[{\"bytes\":\"000056d8b91b541c9d20d51f929dcccca2f14928f1dc\"}],{\"int\":\"62\"}]},{\"prim\":\"Pair\",\"args\":[{\"int\":\"63\"},{\"string\":\"Aspen Digital Token\"}]}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"False\"},{\"bytes\":\"0000a2560a416161def96031630886abe950c4baf036\"}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"False\"},{\"bytes\":\"010d25f77b84dc2164a5d1ce5e8a5d3ca2b1d0cbf900\"}]}]}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"bytes\":\"01796ad78734892d5ae4186e84a30290040732ada700\"},{\"string\":\"ASPD\"}]},{\"int\":\"18000000\"}]}]}"),
 						Tags:            types.FA12Tag,
 						Transfers: []*transfer.Transfer{
 							{
-								Network:   types.Mainnet,
-								Contract:  "KT1S5iPRQ612wcNm6mXDqDhTNegGFcvTV7vM",
-								Initiator: "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+								Network:  types.Mainnet,
+								Contract: "KT1S5iPRQ612wcNm6mXDqDhTNegGFcvTV7vM",
+								Initiator: account.Account{
+									Network: types.Mainnet,
+									Address: "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+									Type:    types.AccountTypeTz,
+								},
 								Status:    types.OperationStatusApplied,
 								Timestamp: timestamp,
 								Level:     1068669,
-								From:      "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
-								To:        "tz1invbJv3AEm55ct7QF2dVbWZuaDekssYkV",
-								TokenID:   0,
-								Amount:    newDecimal("8010000"),
+								From: account.Account{
+									Network: types.Mainnet,
+									Address: "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+									Type:    types.AccountTypeTz,
+								},
+								To: account.Account{
+									Network: types.Mainnet,
+									Address: "tz1invbJv3AEm55ct7QF2dVbWZuaDekssYkV",
+									Type:    types.AccountTypeTz,
+								},
+								TokenID: 0,
+								Amount:  decimal.RequireFromString("8010000"),
 							},
 						},
 						BigMapDiffs: []*bigmapdiff.BigMapDiff{
@@ -419,37 +554,73 @@ func TestGroup_Parse(t *testing.T) {
 							},
 						},
 					}, {
-						Kind:            types.OperationKindTransaction,
-						Source:          "KT1S5iPRQ612wcNm6mXDqDhTNegGFcvTV7vM",
-						Destination:     "KT19nHqEWZxFFbbDL1b7Y86escgEN7qUShGo",
-						Status:          types.OperationStatusApplied,
-						Level:           1068669,
-						Counter:         5791164,
-						Network:         types.Mainnet,
-						Hash:            "opJXaAMkBrAbd1XFd23kS8vXiw63tU4rLUcLrZgqUCpCbhT1Pn9",
-						Nonce:           setInt64(0),
-						Entrypoint:      "validateAccounts",
-						Internal:        true,
-						Timestamp:       timestamp,
-						ProtocolID:      1,
-						Initiator:       "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+						Kind: types.OperationKindTransaction,
+						Source: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1S5iPRQ612wcNm6mXDqDhTNegGFcvTV7vM",
+							Type:    types.AccountTypeContract,
+						},
+						Destination: account.Account{
+							Network: types.Mainnet,
+							Address: "KT19nHqEWZxFFbbDL1b7Y86escgEN7qUShGo",
+							Type:    types.AccountTypeContract,
+						},
+						Delegate: account.Account{
+							Network: types.Mainnet,
+						},
+						Status:  types.OperationStatusApplied,
+						Level:   1068669,
+						Counter: 5791164,
+						Network: types.Mainnet,
+						Hash:    "opJXaAMkBrAbd1XFd23kS8vXiw63tU4rLUcLrZgqUCpCbhT1Pn9",
+						Nonce:   setInt64(0),
+						Entrypoint: types.NullString{
+							Str:   "validateAccounts",
+							Valid: true,
+						},
+						Internal:   true,
+						Timestamp:  timestamp,
+						ProtocolID: 1,
+						Initiator: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+							Type:    types.AccountTypeTz,
+						},
 						Parameters:      []byte("{\"entrypoint\":\"validateAccounts\",\"value\":{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"bytes\":\"0000a2560a416161def96031630886abe950c4baf036\"},{\"bytes\":\"0000fdf98b65d53a9661e07f41093dcb6f3d931736ba\"}]},{\"prim\":\"Pair\",\"args\":[{\"int\":\"14151000\"},{\"int\":\"0\"}]}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"True\"},{\"prim\":\"Pair\",\"args\":[{\"int\":\"8010000\"},{\"int\":\"18000000\"}]}]}]},{\"bytes\":\"01796ad78734892d5ae4186e84a30290040732ada70076616c696461746552756c6573\"}]}}"),
 						DeffatedStorage: []byte("{\"int\":\"61\"}"),
 					}, {
-						Kind:            types.OperationKindTransaction,
-						Source:          "KT19nHqEWZxFFbbDL1b7Y86escgEN7qUShGo",
-						Destination:     "KT1KemKUx79keZgFW756jQrqKcZJ21y4SPdS",
-						Status:          types.OperationStatusApplied,
-						Level:           1068669,
-						Counter:         5791164,
-						Network:         types.Mainnet,
-						Hash:            "opJXaAMkBrAbd1XFd23kS8vXiw63tU4rLUcLrZgqUCpCbhT1Pn9",
-						Nonce:           setInt64(1),
-						Entrypoint:      "validateRules",
-						Internal:        true,
-						Timestamp:       timestamp,
-						ProtocolID:      1,
-						Initiator:       "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+						Kind: types.OperationKindTransaction,
+						Source: account.Account{
+							Network: types.Mainnet,
+							Address: "KT19nHqEWZxFFbbDL1b7Y86escgEN7qUShGo",
+							Type:    types.AccountTypeContract,
+						},
+						Destination: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1KemKUx79keZgFW756jQrqKcZJ21y4SPdS",
+							Type:    types.AccountTypeContract,
+						},
+						Delegate: account.Account{
+							Network: types.Mainnet,
+						},
+						Status:  types.OperationStatusApplied,
+						Level:   1068669,
+						Counter: 5791164,
+						Network: types.Mainnet,
+						Hash:    "opJXaAMkBrAbd1XFd23kS8vXiw63tU4rLUcLrZgqUCpCbhT1Pn9",
+						Nonce:   setInt64(1),
+						Entrypoint: types.NullString{
+							Str:   "validateRules",
+							Valid: true,
+						},
+						Internal:   true,
+						Timestamp:  timestamp,
+						ProtocolID: 1,
+						Initiator: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+							Type:    types.AccountTypeTz,
+						},
 						Parameters:      []byte("{\"entrypoint\":\"validateRules\",\"value\":{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"None\"},{\"string\":\"US\"}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"False\"},{\"bytes\":\"000056d8b91b541c9d20d51f929dcccca2f14928f1dc\"}]}]},{\"int\":\"2\"}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"None\"},{\"string\":\"US\"}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"False\"},{\"bytes\":\"0000c644b537bdb0dac40fe742010106546effd69395\"}]}]},{\"int\":\"6\"}]}]},{\"prim\":\"Pair\",\"args\":[{\"bytes\":\"0000a2560a416161def96031630886abe950c4baf036\"},{\"bytes\":\"0000fdf98b65d53a9661e07f41093dcb6f3d931736ba\"}]}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"int\":\"14151000\"},{\"int\":\"0\"}]},{\"prim\":\"True\"}]}]},{\"prim\":\"Pair\",\"args\":[{\"bytes\":\"01bff38c4e363eacef338f7b2e15f00ca42fafa1ce00\"},{\"prim\":\"Pair\",\"args\":[{\"int\":\"8010000\"},{\"int\":\"18000000\"}]}]}]}}"),
 						DeffatedStorage: []byte("{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"bytes\":\"000056d8b91b541c9d20d51f929dcccca2f14928f1dc\"},{\"bytes\":\"010d25f77b84dc2164a5d1ce5e8a5d3ca2b1d0cbf900\"}]},[]]}"),
 					},
@@ -479,15 +650,23 @@ func TestGroup_Parse(t *testing.T) {
 					{
 						Network:  types.Mainnet,
 						Contract: "KT1S5iPRQ612wcNm6mXDqDhTNegGFcvTV7vM",
-						Address:  "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
-						TokenID:  0,
-						Balance:  newDecimal("-8010000"),
+						Account: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1aSPEN4RTZbn4aXEsxDiix38dDmacGQ8sq",
+							Type:    types.AccountTypeTz,
+						},
+						TokenID: 0,
+						Balance: decimal.RequireFromString("-8010000"),
 					}, {
 						Network:  types.Mainnet,
 						Contract: "KT1S5iPRQ612wcNm6mXDqDhTNegGFcvTV7vM",
-						Address:  "tz1invbJv3AEm55ct7QF2dVbWZuaDekssYkV",
-						TokenID:  0,
-						Balance:  newDecimal("8010000"),
+						Account: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1invbJv3AEm55ct7QF2dVbWZuaDekssYkV",
+							Type:    types.AccountTypeTz,
+						},
+						TokenID: 0,
+						Balance: decimal.RequireFromString("8010000"),
 					},
 				},
 			},
@@ -495,15 +674,20 @@ func TestGroup_Parse(t *testing.T) {
 			name: "opPUPCpQu6pP38z9TkgFfwLiqVBFGSWQCH8Z2PUL3jrpxqJH5gt",
 			rpc:  rpc,
 			ctx: &config.Context{
-				Storage:       generalRepo,
-				Contracts:     contractRepo,
-				BigMapDiffs:   bmdRepo,
-				Blocks:        blockRepo,
-				Protocols:     protoRepo,
-				TZIP:          tzipRepo,
-				TokenBalances: tbRepo,
-				Cache:         cache.NewCache(),
-				SharePath:     "./test",
+				Storage:          generalRepo,
+				Contracts:        contractRepo,
+				Accounts:         accountsRepo,
+				BigMapDiffs:      bmdRepo,
+				Blocks:           blockRepo,
+				Protocols:        protoRepo,
+				ContractMetadata: cmRepo,
+				TokenBalances:    tbRepo,
+				Scripts:          scriptRepo,
+				Cache: cache.NewCache(
+					map[types.Network]noderpc.INode{
+						types.Mainnet: rpc,
+					}, blockRepo, accountsRepo, contractRepo, protoRepo, cmRepo, bluemonday.UGCPolicy(),
+				),
 			},
 			paramsOpts: []ParseParamsOption{
 				WithHead(noderpc.Header{
@@ -512,11 +696,17 @@ func TestGroup_Parse(t *testing.T) {
 					Level:     1151495,
 					ChainID:   "test",
 				}),
-				WithConstants(protocol.Constants{
-					CostPerByte:                  1000,
-					HardGasLimitPerOperation:     1040000,
-					HardStorageLimitPerOperation: 60000,
-					TimeBetweenBlocks:            60,
+				WithProtocol(&protocol.Protocol{
+					Constants: &protocol.Constants{
+						CostPerByte:                  1000,
+						HardGasLimitPerOperation:     1040000,
+						HardStorageLimitPerOperation: 60000,
+						TimeBetweenBlocks:            60,
+					},
+					Hash:    "PsDELPH1Kxsxt8f9eWbxQeRxkjfbxoqM52jvs5Y5fBxWWh4ifpo",
+					Network: types.Mainnet,
+					ID:      1,
+					SymLink: bcd.SymLinkBabylon,
 				}),
 				WithNetwork(types.Mainnet),
 			},
@@ -528,25 +718,43 @@ func TestGroup_Parse(t *testing.T) {
 			want: &parsers.Result{
 				Operations: []*operation.Operation{
 					{
-						ContentIndex:    0,
-						Network:         types.Mainnet,
-						ProtocolID:      1,
-						Hash:            "opPUPCpQu6pP38z9TkgFfwLiqVBFGSWQCH8Z2PUL3jrpxqJH5gt",
-						Internal:        false,
-						Nonce:           nil,
-						Status:          types.OperationStatusApplied,
-						Timestamp:       timestamp,
-						Level:           1151495,
-						Kind:            types.OperationKindTransaction,
-						Initiator:       "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
-						Source:          "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
-						Fee:             43074,
-						Counter:         6909186,
-						GasLimit:        427673,
-						StorageLimit:    47,
-						Destination:     "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
-						Parameters:      []byte("{\"entrypoint\":\"redeem\",\"value\":{\"bytes\":\"a874aac22777351417c9bde0920cc7ed33e54453e1dd149a1f3a60521358d19a\"}}"),
-						Entrypoint:      "redeem",
+						ContentIndex: 0,
+						Network:      types.Mainnet,
+						ProtocolID:   1,
+						Hash:         "opPUPCpQu6pP38z9TkgFfwLiqVBFGSWQCH8Z2PUL3jrpxqJH5gt",
+						Internal:     false,
+						Nonce:        nil,
+						Status:       types.OperationStatusApplied,
+						Timestamp:    timestamp,
+						Level:        1151495,
+						Kind:         types.OperationKindTransaction,
+						Initiator: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
+							Type:    types.AccountTypeTz,
+						},
+						Source: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
+							Type:    types.AccountTypeTz,
+						},
+						Delegate: account.Account{
+							Network: types.Mainnet,
+						},
+						Fee:          43074,
+						Counter:      6909186,
+						GasLimit:     427673,
+						StorageLimit: 47,
+						Destination: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
+							Type:    types.AccountTypeContract,
+						},
+						Parameters: []byte("{\"entrypoint\":\"redeem\",\"value\":{\"bytes\":\"a874aac22777351417c9bde0920cc7ed33e54453e1dd149a1f3a60521358d19a\"}}"),
+						Entrypoint: types.NullString{
+							Str:   "redeem",
+							Valid: true,
+						},
 						DeffatedStorage: []byte("{\"prim\":\"Pair\",\"args\":[{\"int\":\"32\"},{\"prim\":\"Unit\"}]}"),
 						BigMapDiffs: []*bigmapdiff.BigMapDiff{
 							{
@@ -561,37 +769,67 @@ func TestGroup_Parse(t *testing.T) {
 							},
 						},
 					}, {
-						ContentIndex:    0,
-						Network:         types.Mainnet,
-						ProtocolID:      1,
-						Hash:            "opPUPCpQu6pP38z9TkgFfwLiqVBFGSWQCH8Z2PUL3jrpxqJH5gt",
-						Internal:        true,
-						Nonce:           setInt64(0),
-						Status:          types.OperationStatusApplied,
-						Timestamp:       timestamp,
-						Level:           1151495,
-						Kind:            types.OperationKindTransaction,
-						Initiator:       "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
-						Source:          "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
-						Counter:         6909186,
-						Destination:     "KT1PWx2mnDueood7fEmfbBDKx1D9BAnnXitn",
-						Parameters:      []byte("{\"entrypoint\":\"transfer\",\"value\":{\"prim\":\"Pair\",\"args\":[{\"bytes\":\"011871cfab6dafee00330602b4342b6500c874c93b00\"},{\"prim\":\"Pair\",\"args\":[{\"bytes\":\"0000c2473c617946ce7b9f6843f193401203851cb2ec\"},{\"int\":\"7874880\"}]}]}}"),
-						Entrypoint:      "transfer",
+						ContentIndex: 0,
+						Network:      types.Mainnet,
+						ProtocolID:   1,
+						Hash:         "opPUPCpQu6pP38z9TkgFfwLiqVBFGSWQCH8Z2PUL3jrpxqJH5gt",
+						Internal:     true,
+						Nonce:        setInt64(0),
+						Status:       types.OperationStatusApplied,
+						Timestamp:    timestamp,
+						Level:        1151495,
+						Kind:         types.OperationKindTransaction,
+						Initiator: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
+							Type:    types.AccountTypeTz,
+						},
+						Source: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
+							Type:    types.AccountTypeContract,
+						},
+						Counter: 6909186,
+						Destination: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1PWx2mnDueood7fEmfbBDKx1D9BAnnXitn",
+							Type:    types.AccountTypeContract,
+						},
+						Delegate: account.Account{
+							Network: types.Mainnet,
+						},
+						Parameters: []byte("{\"entrypoint\":\"transfer\",\"value\":{\"prim\":\"Pair\",\"args\":[{\"bytes\":\"011871cfab6dafee00330602b4342b6500c874c93b00\"},{\"prim\":\"Pair\",\"args\":[{\"bytes\":\"0000c2473c617946ce7b9f6843f193401203851cb2ec\"},{\"int\":\"7874880\"}]}]}}"),
+						Entrypoint: types.NullString{
+							Str:   "transfer",
+							Valid: true,
+						},
 						Burned:          47000,
 						DeffatedStorage: []byte("{\"prim\":\"Pair\",\"args\":[{\"int\":\"31\"},{\"prim\":\"Pair\",\"args\":[[{\"prim\":\"DUP\"},{\"prim\":\"CAR\"},{\"prim\":\"DIP\",\"args\":[[{\"prim\":\"CDR\"}]]},{\"prim\":\"DUP\"},{\"prim\":\"DUP\"},{\"prim\":\"CAR\"},{\"prim\":\"DIP\",\"args\":[[{\"prim\":\"CDR\"}]]},{\"prim\":\"DIP\",\"args\":[[{\"prim\":\"DIP\",\"args\":[{\"int\":\"2\"},[{\"prim\":\"DUP\"}]]},{\"prim\":\"DIG\",\"args\":[{\"int\":\"2\"}]}]]},{\"prim\":\"PUSH\",\"args\":[{\"prim\":\"string\"},{\"string\":\"code\"}]},{\"prim\":\"PAIR\"},{\"prim\":\"PACK\"},{\"prim\":\"GET\"},{\"prim\":\"IF_NONE\",\"args\":[[{\"prim\":\"NONE\",\"args\":[{\"prim\":\"lambda\",\"args\":[{\"prim\":\"pair\",\"args\":[{\"prim\":\"bytes\"},{\"prim\":\"big_map\",\"args\":[{\"prim\":\"bytes\"},{\"prim\":\"bytes\"}]}]},{\"prim\":\"pair\",\"args\":[{\"prim\":\"list\",\"args\":[{\"prim\":\"operation\"}]},{\"prim\":\"big_map\",\"args\":[{\"prim\":\"bytes\"},{\"prim\":\"bytes\"}]}]}]}]}],[{\"prim\":\"UNPACK\",\"args\":[{\"prim\":\"lambda\",\"args\":[{\"prim\":\"pair\",\"args\":[{\"prim\":\"bytes\"},{\"prim\":\"big_map\",\"args\":[{\"prim\":\"bytes\"},{\"prim\":\"bytes\"}]}]},{\"prim\":\"pair\",\"args\":[{\"prim\":\"list\",\"args\":[{\"prim\":\"operation\"}]},{\"prim\":\"big_map\",\"args\":[{\"prim\":\"bytes\"},{\"prim\":\"bytes\"}]}]}]}]},{\"prim\":\"IF_NONE\",\"args\":[[{\"prim\":\"PUSH\",\"args\":[{\"prim\":\"string\"},{\"string\":\"UStore: failed to unpack code\"}]},{\"prim\":\"FAILWITH\"}],[]]},{\"prim\":\"SOME\"}]]},{\"prim\":\"IF_NONE\",\"args\":[[{\"prim\":\"DROP\"},{\"prim\":\"DIP\",\"args\":[[{\"prim\":\"DUP\"},{\"prim\":\"PUSH\",\"args\":[{\"prim\":\"bytes\"},{\"bytes\":\"05010000000866616c6c6261636b\"}]},{\"prim\":\"GET\"},{\"prim\":\"IF_NONE\",\"args\":[[{\"prim\":\"PUSH\",\"args\":[{\"prim\":\"string\"},{\"string\":\"UStore: no field fallback\"}]},{\"prim\":\"FAILWITH\"}],[]]},{\"prim\":\"UNPACK\",\"args\":[{\"prim\":\"lambda\",\"args\":[{\"prim\":\"pair\",\"args\":[{\"prim\":\"pair\",\"args\":[{\"prim\":\"string\"},{\"prim\":\"bytes\"}]},{\"prim\":\"big_map\",\"args\":[{\"prim\":\"bytes\"},{\"prim\":\"bytes\"}]}]},{\"prim\":\"pair\",\"args\":[{\"prim\":\"list\",\"args\":[{\"prim\":\"operation\"}]},{\"prim\":\"big_map\",\"args\":[{\"prim\":\"bytes\"},{\"prim\":\"bytes\"}]}]}]}]},{\"prim\":\"IF_NONE\",\"args\":[[{\"prim\":\"PUSH\",\"args\":[{\"prim\":\"string\"},{\"string\":\"UStore: failed to unpack fallback\"}]},{\"prim\":\"FAILWITH\"}],[]]},{\"prim\":\"SWAP\"}]]},{\"prim\":\"PAIR\"},{\"prim\":\"EXEC\"}],[{\"prim\":\"DIP\",\"args\":[[{\"prim\":\"SWAP\"},{\"prim\":\"DROP\"},{\"prim\":\"PAIR\"}]]},{\"prim\":\"SWAP\"},{\"prim\":\"EXEC\"}]]}],{\"prim\":\"Pair\",\"args\":[{\"int\":\"1\"},{\"prim\":\"False\"}]}]}]}"),
 						Tags:            types.FA12Tag,
 						Transfers: []*transfer.Transfer{
 							{
-								Network:   types.Mainnet,
-								Contract:  "KT1PWx2mnDueood7fEmfbBDKx1D9BAnnXitn",
-								Initiator: "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
+								Network:  types.Mainnet,
+								Contract: "KT1PWx2mnDueood7fEmfbBDKx1D9BAnnXitn",
+								Initiator: account.Account{
+									Network: types.Mainnet,
+									Address: "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
+									Type:    types.AccountTypeContract,
+								},
 								Status:    types.OperationStatusApplied,
 								Timestamp: timestamp,
 								Level:     1151495,
-								From:      "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
-								To:        "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
-								TokenID:   0,
-								Amount:    newDecimal("7874880"),
+								From: account.Account{
+									Network: types.Mainnet,
+									Address: "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
+									Type:    types.AccountTypeContract,
+								},
+								To: account.Account{
+									Network: types.Mainnet,
+									Address: "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
+									Type:    types.AccountTypeTz,
+								},
+								TokenID: 0,
+								Amount:  decimal.RequireFromString("7874880"),
 							},
 						},
 						BigMapDiffs: []*bigmapdiff.BigMapDiff{
@@ -675,15 +913,23 @@ func TestGroup_Parse(t *testing.T) {
 					{
 						Network:  types.Mainnet,
 						Contract: "KT1PWx2mnDueood7fEmfbBDKx1D9BAnnXitn",
-						Address:  "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
-						TokenID:  0,
-						Balance:  newDecimal("-7874880"),
+						Account: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1Ap287P1NzsnToSJdA4aqSNjPomRaHBZSr",
+							Type:    types.AccountTypeContract,
+						},
+						TokenID: 0,
+						Balance: decimal.RequireFromString("-7874880"),
 					}, {
 						Network:  types.Mainnet,
 						Contract: "KT1PWx2mnDueood7fEmfbBDKx1D9BAnnXitn",
-						Address:  "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
-						TokenID:  0,
-						Balance:  newDecimal("7874880"),
+						Account: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1dMH7tW7RhdvVMR4wKVFF1Ke8m8ZDvrTTE",
+							Type:    types.AccountTypeTz,
+						},
+						TokenID: 0,
+						Balance: decimal.RequireFromString("7874880"),
 					},
 				},
 			},
@@ -691,15 +937,19 @@ func TestGroup_Parse(t *testing.T) {
 			name: "onzUDQhwunz2yqzfEsoURXEBz9p7Gk8DgY4QBva52Z4b3AJCZjt",
 			rpc:  rpc,
 			ctx: &config.Context{
-				Storage:       generalRepo,
-				Contracts:     contractRepo,
-				BigMapDiffs:   bmdRepo,
-				Blocks:        blockRepo,
-				Protocols:     protoRepo,
-				TZIP:          tzipRepo,
-				TokenBalances: tbRepo,
-				Cache:         cache.NewCache(),
-				SharePath:     "./test",
+				Storage:          generalRepo,
+				Contracts:        contractRepo,
+				BigMapDiffs:      bmdRepo,
+				Blocks:           blockRepo,
+				Protocols:        protoRepo,
+				ContractMetadata: cmRepo,
+				TokenBalances:    tbRepo,
+				Scripts:          scriptRepo,
+				Cache: cache.NewCache(
+					map[types.Network]noderpc.INode{
+						types.Delphinet: rpc,
+					}, blockRepo, accountsRepo, contractRepo, protoRepo, cmRepo, bluemonday.UGCPolicy(),
+				),
 			},
 			paramsOpts: []ParseParamsOption{
 				WithHead(noderpc.Header{
@@ -708,11 +958,16 @@ func TestGroup_Parse(t *testing.T) {
 					Level:     86142,
 					ChainID:   "test",
 				}),
-				WithConstants(protocol.Constants{
-					CostPerByte:                  250,
-					HardGasLimitPerOperation:     1040000,
-					HardStorageLimitPerOperation: 60000,
-					TimeBetweenBlocks:            30,
+				WithProtocol(&protocol.Protocol{
+					Constants: &protocol.Constants{
+						CostPerByte:                  250,
+						HardGasLimitPerOperation:     1040000,
+						HardStorageLimitPerOperation: 60000,
+						TimeBetweenBlocks:            30,
+					},
+					Hash:    "PsDELPH1Kxsxt8f9eWbxQeRxkjfbxoqM52jvs5Y5fBxWWh4ifpo",
+					Network: types.Delphinet,
+					SymLink: bcd.SymLinkBabylon,
 				}),
 				WithNetwork(types.Delphinet),
 			},
@@ -723,23 +978,38 @@ func TestGroup_Parse(t *testing.T) {
 			want: &parsers.Result{
 				Operations: []*operation.Operation{
 					{
-						ContentIndex:                       0,
-						Network:                            types.Delphinet,
-						ProtocolID:                         0,
-						Hash:                               "onzUDQhwunz2yqzfEsoURXEBz9p7Gk8DgY4QBva52Z4b3AJCZjt",
-						Internal:                           false,
-						Status:                             types.OperationStatusApplied,
-						Timestamp:                          timestamp,
-						Level:                              86142,
-						Kind:                               types.OperationKindOrigination,
-						Initiator:                          "tz1SX7SPdx4ZJb6uP5Hh5XBVZhh9wTfFaud3",
-						Source:                             "tz1SX7SPdx4ZJb6uP5Hh5XBVZhh9wTfFaud3",
-						Fee:                                510,
-						Counter:                            654594,
-						GasLimit:                           1870,
-						StorageLimit:                       371,
-						Amount:                             0,
-						Destination:                        "KT1NppzrgyLZD3aku7fssfhYPm5QqZwyabvR",
+						ContentIndex: 0,
+						Network:      types.Delphinet,
+						ProtocolID:   0,
+						Hash:         "onzUDQhwunz2yqzfEsoURXEBz9p7Gk8DgY4QBva52Z4b3AJCZjt",
+						Internal:     false,
+						Status:       types.OperationStatusApplied,
+						Timestamp:    timestamp,
+						Level:        86142,
+						Kind:         types.OperationKindOrigination,
+						Initiator: account.Account{
+							Network: types.Delphinet,
+							Address: "tz1SX7SPdx4ZJb6uP5Hh5XBVZhh9wTfFaud3",
+							Type:    types.AccountTypeTz,
+						},
+						Source: account.Account{
+							Network: types.Delphinet,
+							Address: "tz1SX7SPdx4ZJb6uP5Hh5XBVZhh9wTfFaud3",
+							Type:    types.AccountTypeTz,
+						},
+						Fee:          510,
+						Counter:      654594,
+						GasLimit:     1870,
+						StorageLimit: 371,
+						Amount:       0,
+						Destination: account.Account{
+							Network: types.Delphinet,
+							Address: "KT1NppzrgyLZD3aku7fssfhYPm5QqZwyabvR",
+							Type:    types.AccountTypeContract,
+						},
+						Delegate: account.Account{
+							Network: types.Delphinet,
+						},
 						Burned:                             87750,
 						AllocatedDestinationContractBurned: 64250,
 						DeffatedStorage:                    []byte("{\"int\":\"0\"}\n"),
@@ -747,14 +1017,33 @@ func TestGroup_Parse(t *testing.T) {
 				},
 				Contracts: []*modelContract.Contract{
 					{
-						Network:     types.Delphinet,
-						Level:       86142,
-						Timestamp:   timestamp,
-						Language:    "unknown",
-						Hash:        "97a40c7ff3bad5edb92c8e1dcfd4bfc778da8166a7632c1bcecbf8d8f9e4490b",
-						Entrypoints: []string{"decrement", "increment"},
-						Address:     "KT1NppzrgyLZD3aku7fssfhYPm5QqZwyabvR",
-						Manager:     "tz1SX7SPdx4ZJb6uP5Hh5XBVZhh9wTfFaud3",
+						Network:   types.Delphinet,
+						Level:     86142,
+						Timestamp: timestamp,
+						Account: account.Account{
+							Network: types.Delphinet,
+							Address: "KT1NppzrgyLZD3aku7fssfhYPm5QqZwyabvR",
+							Type:    types.AccountTypeContract,
+						},
+						Manager: account.Account{
+							Network: types.Delphinet,
+							Address: "tz1SX7SPdx4ZJb6uP5Hh5XBVZhh9wTfFaud3",
+							Type:    types.AccountTypeTz,
+						},
+						Delegate: account.Account{
+							Network: types.Delphinet,
+						},
+						Babylon: modelContract.Script{
+							Entrypoints:          []string{"decrement", "increment"},
+							Annotations:          []string{"%decrement", "%increment"},
+							Hash:                 "97a40c7ff3bad5edb92c8e1dcfd4bfc778da8166a7632c1bcecbf8d8f9e4490b",
+							Code:                 []byte(`[[{"prim":"DUP"},{"prim":"CDR"},{"prim":"SWAP"},{"prim":"CAR"},{"prim":"IF_LEFT","args":[[{"prim":"SWAP"},{"prim":"SUB"}],[{"prim":"ADD"}]]},{"prim":"NIL","args":[{"prim":"operation"}]},{"prim":"PAIR"}]]`),
+							Parameter:            []byte(`[{"prim":"or","args":[{"prim":"int","annots":["%decrement"]},{"prim":"int","annots":["%increment"]}]}]`),
+							Storage:              []byte(`[{"prim":"int"}]`),
+							FingerprintCode:      []byte{33, 23, 76, 22, 46, 76, 75, 18, 61, 109, 66},
+							FingerprintParameter: []byte{91, 91},
+							FingerprintStorage:   []byte{91},
+						},
 					},
 				},
 			},
@@ -762,15 +1051,19 @@ func TestGroup_Parse(t *testing.T) {
 			name: "onv6Q1dNejAGEJeQzwRannWsDSGw85FuFdhLnBrY18TBcC9p8kC",
 			rpc:  rpc,
 			ctx: &config.Context{
-				Storage:       generalRepo,
-				Contracts:     contractRepo,
-				BigMapDiffs:   bmdRepo,
-				Blocks:        blockRepo,
-				Protocols:     protoRepo,
-				TZIP:          tzipRepo,
-				TokenBalances: tbRepo,
-				Cache:         cache.NewCache(),
-				SharePath:     "./test",
+				Storage:          generalRepo,
+				Contracts:        contractRepo,
+				BigMapDiffs:      bmdRepo,
+				Blocks:           blockRepo,
+				Protocols:        protoRepo,
+				ContractMetadata: cmRepo,
+				TokenBalances:    tbRepo,
+				Scripts:          scriptRepo,
+				Cache: cache.NewCache(
+					map[types.Network]noderpc.INode{
+						types.Mainnet: rpc,
+					}, blockRepo, accountsRepo, contractRepo, protoRepo, cmRepo, bluemonday.UGCPolicy(),
+				),
 			},
 			paramsOpts: []ParseParamsOption{
 				WithHead(noderpc.Header{
@@ -779,11 +1072,17 @@ func TestGroup_Parse(t *testing.T) {
 					Level:     301436,
 					ChainID:   "test",
 				}),
-				WithConstants(protocol.Constants{
-					CostPerByte:                  1000,
-					HardGasLimitPerOperation:     400000,
-					HardStorageLimitPerOperation: 60000,
-					TimeBetweenBlocks:            60,
+				WithProtocol(&protocol.Protocol{
+					Constants: &protocol.Constants{
+						CostPerByte:                  1000,
+						HardGasLimitPerOperation:     400000,
+						HardStorageLimitPerOperation: 60000,
+						TimeBetweenBlocks:            60,
+					},
+					Hash:    "PsddFKi32cMJ2qPjf43Qv5GDWLDPZb3T3bF6fLKiF5HtvHNU7aP",
+					Network: types.Mainnet,
+					SymLink: bcd.SymLinkAlpha,
+					ID:      2,
 				}),
 				WithNetwork(types.Mainnet),
 			},
@@ -794,20 +1093,35 @@ func TestGroup_Parse(t *testing.T) {
 			want: &parsers.Result{
 				Operations: []*operation.Operation{
 					{
-						Kind:                               types.OperationKindOrigination,
-						Source:                             "tz1MXrEgDNnR8PDryN8sq4B2m9Pqcf57wBqM",
-						Fee:                                1555,
-						Counter:                            983250,
-						GasLimit:                           12251,
-						StorageLimit:                       351,
-						Destination:                        "KT1AbjG7vtpV8osdoJXcMRck8eTwst8dWoz4",
-						Status:                             types.OperationStatusApplied,
-						Level:                              301436,
-						Network:                            types.Mainnet,
-						Hash:                               "onv6Q1dNejAGEJeQzwRannWsDSGw85FuFdhLnBrY18TBcC9p8kC",
-						Timestamp:                          timestamp,
-						Burned:                             331000,
-						Initiator:                          "tz1MXrEgDNnR8PDryN8sq4B2m9Pqcf57wBqM",
+						Kind: types.OperationKindOrigination,
+						Source: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1MXrEgDNnR8PDryN8sq4B2m9Pqcf57wBqM",
+							Type:    types.AccountTypeTz,
+						},
+						Fee:          1555,
+						Counter:      983250,
+						GasLimit:     12251,
+						StorageLimit: 351,
+						Destination: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1AbjG7vtpV8osdoJXcMRck8eTwst8dWoz4",
+							Type:    types.AccountTypeContract,
+						},
+						Delegate: account.Account{
+							Network: types.Mainnet,
+						},
+						Status:    types.OperationStatusApplied,
+						Level:     301436,
+						Network:   types.Mainnet,
+						Hash:      "onv6Q1dNejAGEJeQzwRannWsDSGw85FuFdhLnBrY18TBcC9p8kC",
+						Timestamp: timestamp,
+						Burned:    331000,
+						Initiator: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1MXrEgDNnR8PDryN8sq4B2m9Pqcf57wBqM",
+							Type:    types.AccountTypeTz,
+						},
 						ProtocolID:                         2,
 						DeffatedStorage:                    []byte("[]"),
 						AllocatedDestinationContractBurned: 257000,
@@ -815,15 +1129,32 @@ func TestGroup_Parse(t *testing.T) {
 				},
 				Contracts: []*modelContract.Contract{
 					{
-						Network:     types.Mainnet,
-						Level:       301436,
-						Timestamp:   timestamp,
-						Language:    "unknown",
-						Hash:        "8fe2bee899e8700c88f620d06b4623fc6facddfce7157d56c1548108fefca7ca",
-						Tags:        types.Tags(0),
-						Entrypoints: []string{"default"},
-						Address:     "KT1AbjG7vtpV8osdoJXcMRck8eTwst8dWoz4",
-						Manager:     "tz1MXrEgDNnR8PDryN8sq4B2m9Pqcf57wBqM",
+						Network:   types.Mainnet,
+						Level:     301436,
+						Timestamp: timestamp,
+						Account: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1AbjG7vtpV8osdoJXcMRck8eTwst8dWoz4",
+							Type:    types.AccountTypeContract,
+						},
+						Manager: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1MXrEgDNnR8PDryN8sq4B2m9Pqcf57wBqM",
+							Type:    types.AccountTypeTz,
+						},
+						Delegate: account.Account{
+							Network: types.Mainnet,
+						},
+						Alpha: modelContract.Script{
+							Hash:        "c4915a55dbe0a3dfc8feb77e46f3e32828f80730a506fab277d8d6c0d5e2f1ec",
+							Tags:        types.Tags(0),
+							Entrypoints: []string{"default"},
+							Code:        []byte(`[[[[{"prim":"DUP"},{"prim":"CAR"},{"prim":"DIP","args":[[{"prim":"CDR"}]]}]],{"prim":"CONS"},{"prim":"NIL","args":[{"prim":"operation"}]},{"prim":"PAIR"}]]`),
+							Parameter:   []byte(`[{"prim":"pair","args":[{"prim":"string"},{"prim":"nat"}]}]`),
+							Storage:     []byte(`[{"prim":"list","args":[{"prim":"pair","args":[{"prim":"string"},{"prim":"nat"}]}]}]`), FingerprintCode: []byte{33, 22, 31, 23, 27, 61, 109, 66},
+							FingerprintParameter: []byte{104, 98},
+							FingerprintStorage:   []byte{95, 104, 98},
+						},
 					},
 				},
 			},
@@ -831,15 +1162,19 @@ func TestGroup_Parse(t *testing.T) {
 			name: "op4fFMvYsxvSUKZmLWC7aUf25VMYqigaDwTZCAoBBi8zACbHTNg",
 			rpc:  rpc,
 			ctx: &config.Context{
-				Storage:       generalRepo,
-				Contracts:     contractRepo,
-				BigMapDiffs:   bmdRepo,
-				Blocks:        blockRepo,
-				Protocols:     protoRepo,
-				TZIP:          tzipRepo,
-				TokenBalances: tbRepo,
-				Cache:         cache.NewCache(),
-				SharePath:     "./test",
+				Storage:          generalRepo,
+				Contracts:        contractRepo,
+				BigMapDiffs:      bmdRepo,
+				Blocks:           blockRepo,
+				Protocols:        protoRepo,
+				ContractMetadata: cmRepo,
+				TokenBalances:    tbRepo,
+				Scripts:          scriptRepo,
+				Cache: cache.NewCache(
+					map[types.Network]noderpc.INode{
+						types.Edo2net: rpc,
+					}, blockRepo, accountsRepo, contractRepo, protoRepo, cmRepo, bluemonday.UGCPolicy(),
+				),
 			},
 			paramsOpts: []ParseParamsOption{
 				WithHead(noderpc.Header{
@@ -848,11 +1183,17 @@ func TestGroup_Parse(t *testing.T) {
 					Level:     72207,
 					ChainID:   "test",
 				}),
-				WithConstants(protocol.Constants{
-					CostPerByte:                  1000,
-					HardGasLimitPerOperation:     400000,
-					HardStorageLimitPerOperation: 60000,
-					TimeBetweenBlocks:            60,
+				WithProtocol(&protocol.Protocol{
+					Constants: &protocol.Constants{
+						CostPerByte:                  1000,
+						HardGasLimitPerOperation:     400000,
+						HardStorageLimitPerOperation: 60000,
+						TimeBetweenBlocks:            60,
+					},
+					Hash:    "PtEdo2ZkT9oKpimTah6x2embF25oss54njMuPzkJTEi5RqfdZFA",
+					Network: types.Edo2net,
+					SymLink: bcd.SymLinkBabylon,
+					ID:      3,
 				}),
 				WithNetwork(types.Edo2net),
 			},
@@ -864,119 +1205,174 @@ func TestGroup_Parse(t *testing.T) {
 			want: &parsers.Result{
 				Operations: []*operation.Operation{
 					{
-						Kind:            types.OperationKindTransaction,
-						Source:          "tz1gXhGAXgKvrXjn4t16rYUXocqbch1XXJFN",
-						Fee:             4045,
-						Counter:         155670,
-						GasLimit:        37831,
-						StorageLimit:    5265,
-						Destination:     "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
-						Status:          types.OperationStatusApplied,
-						Level:           72207,
-						Network:         types.Edo2net,
-						Hash:            "op4fFMvYsxvSUKZmLWC7aUf25VMYqigaDwTZCAoBBi8zACbHTNg",
-						Timestamp:       timestamp,
-						Entrypoint:      "@entrypoint_1",
-						Initiator:       "tz1gXhGAXgKvrXjn4t16rYUXocqbch1XXJFN",
+						Kind: types.OperationKindTransaction,
+						Source: account.Account{
+							Network: types.Edo2net,
+							Address: "tz1gXhGAXgKvrXjn4t16rYUXocqbch1XXJFN",
+							Type:    types.AccountTypeTz,
+						},
+						Fee:          4045,
+						Counter:      155670,
+						GasLimit:     37831,
+						StorageLimit: 5265,
+						Destination: account.Account{
+							Network: types.Edo2net,
+							Address: "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
+							Type:    types.AccountTypeContract,
+						},
+						Status:    types.OperationStatusApplied,
+						Level:     72207,
+						Network:   types.Edo2net,
+						Hash:      "op4fFMvYsxvSUKZmLWC7aUf25VMYqigaDwTZCAoBBi8zACbHTNg",
+						Timestamp: timestamp,
+						Entrypoint: types.NullString{
+							Str:   "@entrypoint_1",
+							Valid: true,
+						},
+						Initiator: account.Account{
+							Network: types.Edo2net,
+							Address: "tz1gXhGAXgKvrXjn4t16rYUXocqbch1XXJFN",
+							Type:    types.AccountTypeTz,
+						},
+						Delegate: account.Account{
+							Network: types.Edo2net,
+						},
 						Parameters:      []byte("{\"entrypoint\":\"default\",\"value\":{\"prim\":\"Right\",\"args\":[{\"prim\":\"Unit\"}]}}"),
 						ProtocolID:      3,
 						DeffatedStorage: []byte("{\"prim\":\"Pair\",\"args\":[{\"bytes\":\"0000e527ed176ccf8f8297f674a9886a2ba8a55818d9\"},{\"prim\":\"Left\",\"args\":[{\"bytes\":\"016ebc941b2ae4e305470f392fa050e41ca1e52b4500\"}]}]}"),
+						BigMapActions: []*bigmapaction.BigMapAction{
+							{
+								Action:    types.BigMapActionRemove,
+								SourcePtr: setInt64(25167),
+								Level:     72207,
+								Address:   "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
+								Network:   types.Edo2net,
+								Timestamp: timestamp,
+							}, {
+								Action:    types.BigMapActionRemove,
+								SourcePtr: setInt64(25166),
+								Level:     72207,
+								Address:   "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
+								Network:   types.Edo2net,
+								Timestamp: timestamp,
+							}, {
+								Action:    types.BigMapActionRemove,
+								SourcePtr: setInt64(25165),
+								Level:     72207,
+								Address:   "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
+								Network:   types.Edo2net,
+								Timestamp: timestamp,
+							}, {
+								Action:    types.BigMapActionRemove,
+								SourcePtr: setInt64(25164),
+								Level:     72207,
+								Address:   "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
+								Network:   types.Edo2net,
+								Timestamp: timestamp,
+							},
+						},
 					}, {
-						Kind:                               types.OperationKindOrigination,
-						Source:                             "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
-						Nonce:                              setInt64(0),
-						Destination:                        "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
-						Status:                             types.OperationStatusApplied,
-						Level:                              72207,
-						Network:                            types.Edo2net,
-						Hash:                               "op4fFMvYsxvSUKZmLWC7aUf25VMYqigaDwTZCAoBBi8zACbHTNg",
-						Timestamp:                          timestamp,
-						Burned:                             5245000,
-						Counter:                            155670,
-						Internal:                           true,
-						Initiator:                          "tz1gXhGAXgKvrXjn4t16rYUXocqbch1XXJFN",
+						Kind: types.OperationKindOrigination,
+						Source: account.Account{
+							Network: types.Edo2net,
+							Address: "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
+							Type:    types.AccountTypeContract,
+						},
+						Nonce: setInt64(0),
+						Destination: account.Account{
+							Network: types.Edo2net,
+							Address: "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
+							Type:    types.AccountTypeContract,
+						},
+						Status:    types.OperationStatusApplied,
+						Level:     72207,
+						Network:   types.Edo2net,
+						Hash:      "op4fFMvYsxvSUKZmLWC7aUf25VMYqigaDwTZCAoBBi8zACbHTNg",
+						Timestamp: timestamp,
+						Burned:    5245000,
+						Counter:   155670,
+						Internal:  true,
+						Initiator: account.Account{
+							Network: types.Edo2net,
+							Address: "tz1gXhGAXgKvrXjn4t16rYUXocqbch1XXJFN",
+							Type:    types.AccountTypeTz,
+						},
+						Delegate: account.Account{
+							Network: types.Edo2net,
+						},
 						ProtocolID:                         3,
 						AllocatedDestinationContractBurned: 257000,
 						Tags:                               types.LedgerTag | types.FA2Tag,
 						DeffatedStorage:                    []byte("{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"string\":\"tz1QozfhaUW4wLnohDo6yiBUmh7cPCSXE9Af\"},[]]},{\"int\":\"25168\"},{\"int\":\"25169\"}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Left\",\"args\":[{\"prim\":\"Unit\"}]},{\"int\":\"25170\"}]},{\"string\":\"tz1QozfhaUW4wLnohDo6yiBUmh7cPCSXE9Af\"},{\"int\":\"0\"}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[[],{\"int\":\"25171\"}]},{\"int\":\"2\"},{\"string\":\"tz1QozfhaUW4wLnohDo6yiBUmh7cPCSXE9Af\"}]},{\"int\":\"11\"}]},{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[{\"prim\":\"Pair\",\"args\":[[],[[{\"prim\":\"DUP\"},{\"prim\":\"CAR\"},{\"prim\":\"DIP\",\"args\":[[{\"prim\":\"CDR\"}]]}],{\"prim\":\"DROP\"},{\"prim\":\"NIL\",\"args\":[{\"prim\":\"operation\"}]},{\"prim\":\"PAIR\"}]]},{\"int\":\"500\"},{\"int\":\"1000\"}]},{\"prim\":\"Pair\",\"args\":[{\"int\":\"1000\"},{\"int\":\"2592000\"}]},{\"int\":\"1\"},{\"int\":\"1\"}]},[{\"prim\":\"DROP\"},{\"prim\":\"PUSH\",\"args\":[{\"prim\":\"bool\"},{\"prim\":\"True\"}]}],[{\"prim\":\"DROP\"},{\"prim\":\"PUSH\",\"args\":[{\"prim\":\"nat\"},{\"int\":\"0\"}]}]]}"),
-					},
-				},
-				BigMapActions: []*bigmapaction.BigMapAction{
-					{
-						Action:    types.BigMapActionRemove,
-						SourcePtr: setInt64(25167),
-						Level:     72207,
-						Address:   "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
-						Network:   types.Edo2net,
-						Timestamp: timestamp,
-					}, {
-						Action:    types.BigMapActionRemove,
-						SourcePtr: setInt64(25166),
-						Level:     72207,
-						Address:   "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
-						Network:   types.Edo2net,
-						Timestamp: timestamp,
-					}, {
-						Action:    types.BigMapActionRemove,
-						SourcePtr: setInt64(25165),
-						Level:     72207,
-						Address:   "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
-						Network:   types.Edo2net,
-						Timestamp: timestamp,
-					}, {
-						Action:    types.BigMapActionRemove,
-						SourcePtr: setInt64(25164),
-						Level:     72207,
-						Address:   "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
-						Network:   types.Edo2net,
-						Timestamp: timestamp,
-					}, {
-						Action:         types.BigMapActionCopy,
-						SourcePtr:      setInt64(25167),
-						DestinationPtr: setInt64(25171),
-						Level:          72207,
-						Address:        "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
-						Network:        types.Edo2net,
-						Timestamp:      timestamp,
-					}, {
-						Action:         types.BigMapActionCopy,
-						SourcePtr:      setInt64(25166),
-						DestinationPtr: setInt64(25170),
-						Level:          72207,
-						Address:        "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
-						Network:        types.Edo2net,
-						Timestamp:      timestamp,
-					}, {
-						Action:         types.BigMapActionCopy,
-						SourcePtr:      setInt64(25165),
-						DestinationPtr: setInt64(25169),
-						Level:          72207,
-						Address:        "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
-						Network:        types.Edo2net,
-						Timestamp:      timestamp,
-					}, {
-						Action:         types.BigMapActionCopy,
-						SourcePtr:      setInt64(25164),
-						DestinationPtr: setInt64(25168),
-						Level:          72207,
-						Address:        "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
-						Network:        types.Edo2net,
-						Timestamp:      timestamp,
+						BigMapActions: []*bigmapaction.BigMapAction{
+							{
+								Action:         types.BigMapActionCopy,
+								SourcePtr:      setInt64(25167),
+								DestinationPtr: setInt64(25171),
+								Level:          72207,
+								Address:        "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
+								Network:        types.Edo2net,
+								Timestamp:      timestamp,
+							}, {
+								Action:         types.BigMapActionCopy,
+								SourcePtr:      setInt64(25166),
+								DestinationPtr: setInt64(25170),
+								Level:          72207,
+								Address:        "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
+								Network:        types.Edo2net,
+								Timestamp:      timestamp,
+							}, {
+								Action:         types.BigMapActionCopy,
+								SourcePtr:      setInt64(25165),
+								DestinationPtr: setInt64(25169),
+								Level:          72207,
+								Address:        "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
+								Network:        types.Edo2net,
+								Timestamp:      timestamp,
+							}, {
+								Action:         types.BigMapActionCopy,
+								SourcePtr:      setInt64(25164),
+								DestinationPtr: setInt64(25168),
+								Level:          72207,
+								Address:        "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
+								Network:        types.Edo2net,
+								Timestamp:      timestamp,
+							},
+						},
 					},
 				},
 				Contracts: []*modelContract.Contract{
 					{
-						Network:     types.Edo2net,
-						Level:       72207,
-						Timestamp:   timestamp,
-						Language:    "unknown",
-						Hash:        "b82a20d0647f5ec74ef2daf404cd365a894f6868da0cd623ed07c6b85977b8db",
-						Tags:        types.LedgerTag | types.FA2Tag,
-						FailStrings: []string{"FA2_INSUFFICIENT_BALANCE"},
-						Annotations: []string{"%token_address", "%drop_proposal", "%transfer_contract_tokens", "%permits_counter", "%remove_operator", "%mint", "%ledger", "%voters", "%owner", "%balance", "%transfer", "%from_", "%max_voting_period", "%not_in_migration", "%start_date", "%custom_entrypoints", "%proposal_check", "%accept_ownership", "%migrate", "%set_quorum_threshold", "%amount", "%proposals", "%min_voting_period", "%rejected_proposal_return_value", "%burn", "%flush", "%max_quorum_threshold", "%migratingTo", "%operators", "%proposer", "%call_FA2", "%argument", "%params", "%transfer_ownership", "%voting_period", "%request", "%confirm_migration", "%frozen_token", "%param", "%admin", "%migration_status", "%proposal_key_list_sort_by_date", "%requests", "%update_operators", "%add_operator", "%getVotePermitCounter", "%propose", "%vote", "%vote_amount", "%proposer_frozen_token", "%callCustom", "%txs", "%operator", "%quorum_threshold", "%to_", "%set_voting_period", "%callback", "%contract_address", "%downvotes", "%max_votes", "%balance_of", "%proposal_key", "%vote_type", "%signature", "%decision_lambda", "%token_id", "%permit", "%key", "%extra", "%pending_owner", "%upvotes", "%max_proposals", "%min_quorum_threshold", "%proposal_metadata", "%metadata", "%migratedTo"},
-						Entrypoints: []string{"callCustom", "accept_ownership", "burn", "balance_of", "transfer", "update_operators", "confirm_migration", "drop_proposal", "flush", "getVotePermitCounter", "migrate", "mint", "propose", "set_quorum_threshold", "set_voting_period", "transfer_ownership", "vote", "transfer_contract_tokens"},
-						Address:     "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
-						Manager:     "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
+						Network:   types.Edo2net,
+						Level:     72207,
+						Timestamp: timestamp,
+						Account: account.Account{
+							Network: types.Edo2net,
+							Address: "KT1JgHoXtZPjVfG82BY3FSys2VJhKVZo2EJU",
+							Type:    types.AccountTypeContract,
+						},
+						Manager: account.Account{
+							Network: types.Edo2net,
+							Address: "KT1C2MfcjWb5R1ZDDxVULCsGuxrf5fEn5264",
+							Type:    types.AccountTypeContract,
+						},
+						Delegate: account.Account{
+							Network: types.Edo2net,
+						},
+						Babylon: modelContract.Script{
+							Hash:                 "b82a20d0647f5ec74ef2daf404cd365a894f6868da0cd623ed07c6b85977b8db",
+							Tags:                 types.LedgerTag | types.FA2Tag,
+							FailStrings:          []string{"FA2_INSUFFICIENT_BALANCE"},
+							Annotations:          []string{"%token_address", "%drop_proposal", "%transfer_contract_tokens", "%permits_counter", "%remove_operator", "%mint", "%ledger", "%voters", "%owner", "%balance", "%transfer", "%from_", "%max_voting_period", "%not_in_migration", "%start_date", "%custom_entrypoints", "%proposal_check", "%accept_ownership", "%migrate", "%set_quorum_threshold", "%amount", "%proposals", "%min_voting_period", "%rejected_proposal_return_value", "%burn", "%flush", "%max_quorum_threshold", "%migratingTo", "%operators", "%proposer", "%call_FA2", "%argument", "%params", "%transfer_ownership", "%voting_period", "%request", "%confirm_migration", "%frozen_token", "%param", "%admin", "%migration_status", "%proposal_key_list_sort_by_date", "%requests", "%update_operators", "%add_operator", "%getVotePermitCounter", "%propose", "%vote", "%vote_amount", "%proposer_frozen_token", "%callCustom", "%txs", "%operator", "%quorum_threshold", "%to_", "%set_voting_period", "%callback", "%contract_address", "%downvotes", "%max_votes", "%balance_of", "%proposal_key", "%vote_type", "%signature", "%decision_lambda", "%token_id", "%permit", "%key", "%extra", "%pending_owner", "%upvotes", "%max_proposals", "%min_quorum_threshold", "%proposal_metadata", "%metadata", "%migratedTo"},
+							Entrypoints:          []string{"callCustom", "accept_ownership", "burn", "balance_of", "transfer", "update_operators", "confirm_migration", "drop_proposal", "flush", "getVotePermitCounter", "migrate", "mint", "propose", "set_quorum_threshold", "set_voting_period", "transfer_ownership", "vote", "transfer_contract_tokens"},
+							Code:                 []byte(`[[{"prim":"PUSH","args":[{"prim":"string"},{"string":"FA2_INSUFFICIENT_BALANCE"}]},{"prim":"FAILWITH"}]]`),
+							Parameter:            []byte(`[{"prim":"or","args":[{"prim":"or","args":[{"prim":"pair","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%callCustom"]},{"prim":"or","args":[{"prim":"or","args":[{"prim":"or","args":[{"prim":"or","args":[{"prim":"unit","annots":["%accept_ownership"]},{"prim":"pair","args":[{"prim":"address","annots":["%from_"]},{"prim":"nat","annots":["%token_id"]},{"prim":"nat","annots":["%amount"]}],"annots":["%burn"]}]},{"prim":"or","args":[{"prim":"or","args":[{"prim":"or","args":[{"prim":"pair","args":[{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address","annots":["%owner"]},{"prim":"nat","annots":["%token_id"]}]}],"annots":["%requests"]},{"prim":"contract","args":[{"prim":"list","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"address","annots":["%owner"]},{"prim":"nat","annots":["%token_id"]}],"annots":["%request"]},{"prim":"nat","annots":["%balance"]}]}]}],"annots":["%callback"]}],"annots":["%balance_of"]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address","annots":["%from_"]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address","annots":["%to_"]},{"prim":"nat","annots":["%token_id"]},{"prim":"nat","annots":["%amount"]}]}],"annots":["%txs"]}]}],"annots":["%transfer"]}]},{"prim":"list","args":[{"prim":"or","args":[{"prim":"pair","args":[{"prim":"address","annots":["%owner"]},{"prim":"address","annots":["%operator"]},{"prim":"nat","annots":["%token_id"]}],"annots":["%add_operator"]},{"prim":"pair","args":[{"prim":"address","annots":["%owner"]},{"prim":"address","annots":["%operator"]},{"prim":"nat","annots":["%token_id"]}],"annots":["%remove_operator"]}]}],"annots":["%update_operators"]}],"annots":["%call_FA2"]},{"prim":"unit","annots":["%confirm_migration"]}]}]},{"prim":"or","args":[{"prim":"or","args":[{"prim":"bytes","annots":["%drop_proposal"]},{"prim":"nat","annots":["%flush"]}]},{"prim":"or","args":[{"prim":"pair","args":[{"prim":"unit","annots":["%param"]},{"prim":"contract","args":[{"prim":"nat"}],"annots":["%callback"]}],"annots":["%getVotePermitCounter"]},{"prim":"address","annots":["%migrate"]}]}]}]},{"prim":"or","args":[{"prim":"or","args":[{"prim":"or","args":[{"prim":"pair","args":[{"prim":"address","annots":["%to_"]},{"prim":"nat","annots":["%token_id"]},{"prim":"nat","annots":["%amount"]}],"annots":["%mint"]},{"prim":"pair","args":[{"prim":"nat","annots":["%frozen_token"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%proposal_metadata"]}],"annots":["%propose"]}]},{"prim":"or","args":[{"prim":"nat","annots":["%set_quorum_threshold"]},{"prim":"nat","annots":["%set_voting_period"]}]}]},{"prim":"or","args":[{"prim":"address","annots":["%transfer_ownership"]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"bytes","annots":["%proposal_key"]},{"prim":"bool","annots":["%vote_type"]},{"prim":"nat","annots":["%vote_amount"]}],"annots":["%argument"]},{"prim":"option","args":[{"prim":"pair","args":[{"prim":"key","annots":["%key"]},{"prim":"signature","annots":["%signature"]}]}],"annots":["%permit"]}]}],"annots":["%vote"]}]}]}]}]},{"prim":"pair","args":[{"prim":"address","annots":["%contract_address"]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address","annots":["%from_"]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address","annots":["%to_"]},{"prim":"nat","annots":["%token_id"]},{"prim":"nat","annots":["%amount"]}]}],"annots":["%txs"]}]}],"annots":["%params"]}],"annots":["%transfer_contract_tokens"]}]}]}]`),
+							Storage:              []byte(`[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"address","annots":["%admin"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%extra"]}]},{"prim":"big_map","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]},{"prim":"nat"}],"annots":["%ledger"]},{"prim":"big_map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"pair","args":[{"prim":"or","args":[{"prim":"unit","annots":["%not_in_migration"]},{"prim":"or","args":[{"prim":"address","annots":["%migratingTo"]},{"prim":"address","annots":["%migratedTo"]}]}],"annots":["%migration_status"]},{"prim":"big_map","args":[{"prim":"pair","args":[{"prim":"address","annots":["%owner"]},{"prim":"address","annots":["%operator"]}]},{"prim":"unit"}],"annots":["%operators"]}]},{"prim":"address","annots":["%pending_owner"]},{"prim":"nat","annots":["%permits_counter"]}]},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"set","args":[{"prim":"pair","args":[{"prim":"timestamp"},{"prim":"bytes"}]}],"annots":["%proposal_key_list_sort_by_date"]},{"prim":"big_map","args":[{"prim":"bytes"},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"nat","annots":["%downvotes"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"address","annots":["%proposer"]},{"prim":"nat","annots":["%proposer_frozen_token"]}]},{"prim":"pair","args":[{"prim":"timestamp","annots":["%start_date"]},{"prim":"nat","annots":["%upvotes"]}]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]}],"annots":["%voters"]}]}],"annots":["%proposals"]}]},{"prim":"nat","annots":["%quorum_threshold"]},{"prim":"address","annots":["%token_address"]}]},{"prim":"nat","annots":["%voting_period"]}]},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%custom_entrypoints"]},{"prim":"lambda","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"nat","annots":["%downvotes"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"address","annots":["%proposer"]},{"prim":"nat","annots":["%proposer_frozen_token"]}]},{"prim":"pair","args":[{"prim":"timestamp","annots":["%start_date"]},{"prim":"nat","annots":["%upvotes"]}]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]}],"annots":["%voters"]}]},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"address","annots":["%admin"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%extra"]}]},{"prim":"big_map","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]},{"prim":"nat"}],"annots":["%ledger"]},{"prim":"big_map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"pair","args":[{"prim":"or","args":[{"prim":"unit","annots":["%not_in_migration"]},{"prim":"or","args":[{"prim":"address","annots":["%migratingTo"]},{"prim":"address","annots":["%migratedTo"]}]}],"annots":["%migration_status"]},{"prim":"big_map","args":[{"prim":"pair","args":[{"prim":"address","annots":["%owner"]},{"prim":"address","annots":["%operator"]}]},{"prim":"unit"}],"annots":["%operators"]}]},{"prim":"address","annots":["%pending_owner"]},{"prim":"nat","annots":["%permits_counter"]}]},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"set","args":[{"prim":"pair","args":[{"prim":"timestamp"},{"prim":"bytes"}]}],"annots":["%proposal_key_list_sort_by_date"]},{"prim":"big_map","args":[{"prim":"bytes"},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"nat","annots":["%downvotes"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"address","annots":["%proposer"]},{"prim":"nat","annots":["%proposer_frozen_token"]}]},{"prim":"pair","args":[{"prim":"timestamp","annots":["%start_date"]},{"prim":"nat","annots":["%upvotes"]}]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]}],"annots":["%voters"]}]}],"annots":["%proposals"]}]},{"prim":"nat","annots":["%quorum_threshold"]},{"prim":"address","annots":["%token_address"]}]},{"prim":"nat","annots":["%voting_period"]}]},{"prim":"pair","args":[{"prim":"list","args":[{"prim":"operation"}]},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"address","annots":["%admin"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%extra"]}]},{"prim":"big_map","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]},{"prim":"nat"}],"annots":["%ledger"]},{"prim":"big_map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"pair","args":[{"prim":"or","args":[{"prim":"unit","annots":["%not_in_migration"]},{"prim":"or","args":[{"prim":"address","annots":["%migratingTo"]},{"prim":"address","annots":["%migratedTo"]}]}],"annots":["%migration_status"]},{"prim":"big_map","args":[{"prim":"pair","args":[{"prim":"address","annots":["%owner"]},{"prim":"address","annots":["%operator"]}]},{"prim":"unit"}],"annots":["%operators"]}]},{"prim":"address","annots":["%pending_owner"]},{"prim":"nat","annots":["%permits_counter"]}]},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"set","args":[{"prim":"pair","args":[{"prim":"timestamp"},{"prim":"bytes"}]}],"annots":["%proposal_key_list_sort_by_date"]},{"prim":"big_map","args":[{"prim":"bytes"},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"nat","annots":["%downvotes"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"address","annots":["%proposer"]},{"prim":"nat","annots":["%proposer_frozen_token"]}]},{"prim":"pair","args":[{"prim":"timestamp","annots":["%start_date"]},{"prim":"nat","annots":["%upvotes"]}]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]}],"annots":["%voters"]}]}],"annots":["%proposals"]}]},{"prim":"nat","annots":["%quorum_threshold"]},{"prim":"address","annots":["%token_address"]}]},{"prim":"nat","annots":["%voting_period"]}]}],"annots":["%decision_lambda"]}]},{"prim":"nat","annots":["%max_proposals"]},{"prim":"nat","annots":["%max_quorum_threshold"]}]},{"prim":"pair","args":[{"prim":"nat","annots":["%max_votes"]},{"prim":"nat","annots":["%max_voting_period"]}]},{"prim":"nat","annots":["%min_quorum_threshold"]},{"prim":"nat","annots":["%min_voting_period"]}]},{"prim":"lambda","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"nat","annots":["%frozen_token"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%proposal_metadata"]}]},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"address","annots":["%admin"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%extra"]}]},{"prim":"big_map","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]},{"prim":"nat"}],"annots":["%ledger"]},{"prim":"big_map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"pair","args":[{"prim":"or","args":[{"prim":"unit","annots":["%not_in_migration"]},{"prim":"or","args":[{"prim":"address","annots":["%migratingTo"]},{"prim":"address","annots":["%migratedTo"]}]}],"annots":["%migration_status"]},{"prim":"big_map","args":[{"prim":"pair","args":[{"prim":"address","annots":["%owner"]},{"prim":"address","annots":["%operator"]}]},{"prim":"unit"}],"annots":["%operators"]}]},{"prim":"address","annots":["%pending_owner"]},{"prim":"nat","annots":["%permits_counter"]}]},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"set","args":[{"prim":"pair","args":[{"prim":"timestamp"},{"prim":"bytes"}]}],"annots":["%proposal_key_list_sort_by_date"]},{"prim":"big_map","args":[{"prim":"bytes"},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"nat","annots":["%downvotes"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"address","annots":["%proposer"]},{"prim":"nat","annots":["%proposer_frozen_token"]}]},{"prim":"pair","args":[{"prim":"timestamp","annots":["%start_date"]},{"prim":"nat","annots":["%upvotes"]}]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]}],"annots":["%voters"]}]}],"annots":["%proposals"]}]},{"prim":"nat","annots":["%quorum_threshold"]},{"prim":"address","annots":["%token_address"]}]},{"prim":"nat","annots":["%voting_period"]}]},{"prim":"bool"}],"annots":["%proposal_check"]},{"prim":"lambda","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"nat","annots":["%downvotes"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"address","annots":["%proposer"]},{"prim":"nat","annots":["%proposer_frozen_token"]}]},{"prim":"pair","args":[{"prim":"timestamp","annots":["%start_date"]},{"prim":"nat","annots":["%upvotes"]}]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]}],"annots":["%voters"]}]},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"address","annots":["%admin"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%extra"]}]},{"prim":"big_map","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]},{"prim":"nat"}],"annots":["%ledger"]},{"prim":"big_map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"pair","args":[{"prim":"or","args":[{"prim":"unit","annots":["%not_in_migration"]},{"prim":"or","args":[{"prim":"address","annots":["%migratingTo"]},{"prim":"address","annots":["%migratedTo"]}]}],"annots":["%migration_status"]},{"prim":"big_map","args":[{"prim":"pair","args":[{"prim":"address","annots":["%owner"]},{"prim":"address","annots":["%operator"]}]},{"prim":"unit"}],"annots":["%operators"]}]},{"prim":"address","annots":["%pending_owner"]},{"prim":"nat","annots":["%permits_counter"]}]},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"set","args":[{"prim":"pair","args":[{"prim":"timestamp"},{"prim":"bytes"}]}],"annots":["%proposal_key_list_sort_by_date"]},{"prim":"big_map","args":[{"prim":"bytes"},{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"pair","args":[{"prim":"nat","annots":["%downvotes"]},{"prim":"map","args":[{"prim":"string"},{"prim":"bytes"}],"annots":["%metadata"]}]},{"prim":"address","annots":["%proposer"]},{"prim":"nat","annots":["%proposer_frozen_token"]}]},{"prim":"pair","args":[{"prim":"timestamp","annots":["%start_date"]},{"prim":"nat","annots":["%upvotes"]}]},{"prim":"list","args":[{"prim":"pair","args":[{"prim":"address"},{"prim":"nat"}]}],"annots":["%voters"]}]}],"annots":["%proposals"]}]},{"prim":"nat","annots":["%quorum_threshold"]},{"prim":"address","annots":["%token_address"]}]},{"prim":"nat","annots":["%voting_period"]}]},{"prim":"nat"}],"annots":["%rejected_proposal_return_value"]}]}]}]`),
+							FingerprintCode:      []byte{67, 104, 104, 39},
+							FingerprintParameter: []byte{104, 105, 108, 110, 98, 98, 95, 110, 98, 90, 95, 110, 98, 98, 95, 110, 95, 110, 98, 98, 95, 110, 110, 98, 110, 110, 98, 108, 105, 98, 108, 90, 98, 110, 110, 98, 98, 98, 96, 104, 105, 98, 98, 110, 95, 105, 89, 98, 99, 92, 103, 110, 95, 110, 95, 110, 98, 98},
+							FingerprintStorage:   []byte{110, 96, 104, 105, 97, 110, 98, 98, 97, 104, 105, 108, 110, 110, 97, 110, 110, 108, 110, 98, 102, 107, 105, 97, 105, 98, 96, 104, 105, 110, 98, 107, 98, 95, 110, 98, 98, 110, 98, 96, 104, 105, 94, 98, 96, 104, 105, 110, 98, 107, 98, 95, 110, 98, 110, 96, 104, 105, 97, 110, 98, 98, 97, 104, 105, 108, 110, 110, 97, 110, 110, 108, 110, 98, 102, 107, 105, 97, 105, 98, 96, 104, 105, 110, 98, 107, 98, 95, 110, 98, 98, 110, 98, 95, 109, 110, 96, 104, 105, 97, 110, 98, 98, 97, 104, 105, 108, 110, 110, 97, 110, 110, 108, 110, 98, 102, 107, 105, 97, 105, 98, 96, 104, 105, 110, 98, 107, 98, 95, 110, 98, 98, 110, 98, 98, 98, 98, 98, 98, 98, 94, 98, 96, 104, 105, 110, 96, 104, 105, 97, 110, 98, 98, 97, 104, 105, 108, 110, 110, 97, 110, 110, 108, 110, 98, 102, 107, 105, 97, 105, 98, 96, 104, 105, 110, 98, 107, 98, 95, 110, 98, 98, 110, 98, 89, 94, 98, 96, 104, 105, 110, 98, 107, 98, 95, 110, 98, 110, 96, 104, 105, 97, 110, 98, 98, 97, 104, 105, 108, 110, 110, 97, 110, 110, 108, 110, 98, 102, 107, 105, 97, 105, 98, 96, 104, 105, 110, 98, 107, 98, 95, 110, 98, 98, 110, 98, 98},
+						},
+						Tags: types.LedgerTag | types.FA2Tag,
 					},
 				},
 			},
@@ -984,15 +1380,19 @@ func TestGroup_Parse(t *testing.T) {
 			name: "ooz1bkCQeYsZYP7vb4Dx7pYPRpWN11Z3G3yP1v4HAfdNXuHRv9c",
 			rpc:  rpc,
 			ctx: &config.Context{
-				Storage:       generalRepo,
-				Contracts:     contractRepo,
-				BigMapDiffs:   bmdRepo,
-				Blocks:        blockRepo,
-				Protocols:     protoRepo,
-				TZIP:          tzipRepo,
-				TokenBalances: tbRepo,
-				Cache:         cache.NewCache(),
-				SharePath:     "./test",
+				Storage:          generalRepo,
+				Contracts:        contractRepo,
+				BigMapDiffs:      bmdRepo,
+				Blocks:           blockRepo,
+				Protocols:        protoRepo,
+				ContractMetadata: cmRepo,
+				TokenBalances:    tbRepo,
+				Scripts:          scriptRepo,
+				Cache: cache.NewCache(
+					map[types.Network]noderpc.INode{
+						types.Mainnet: rpc,
+					}, blockRepo, accountsRepo, contractRepo, protoRepo, cmRepo, bluemonday.UGCPolicy(),
+				),
 			},
 			paramsOpts: []ParseParamsOption{
 				WithHead(noderpc.Header{
@@ -1001,11 +1401,17 @@ func TestGroup_Parse(t *testing.T) {
 					Level:     1516349,
 					ChainID:   "NetXdQprcVkpaWU",
 				}),
-				WithConstants(protocol.Constants{
-					CostPerByte:                  1000,
-					HardGasLimitPerOperation:     400000,
-					HardStorageLimitPerOperation: 60000,
-					TimeBetweenBlocks:            60,
+				WithProtocol(&protocol.Protocol{
+					Constants: &protocol.Constants{
+						CostPerByte:                  1000,
+						HardGasLimitPerOperation:     400000,
+						HardStorageLimitPerOperation: 60000,
+						TimeBetweenBlocks:            60,
+					},
+					Hash:    "PsFLorenaUUuikDWvMDr6fGBRG8kt3e3D3fHoXK1j1BFRxeSH4i",
+					Network: types.Mainnet,
+					ID:      4,
+					SymLink: bcd.SymLinkBabylon,
 				}),
 				WithNetwork(types.Mainnet),
 			},
@@ -1016,32 +1422,62 @@ func TestGroup_Parse(t *testing.T) {
 			want: &parsers.Result{
 				Operations: []*operation.Operation{
 					{
-						Kind:            types.OperationKindTransaction,
-						Source:          "tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb",
-						Fee:             2235,
-						Counter:         9432992,
-						GasLimit:        18553,
-						Destination:     "KT1QcxwB4QyPKfmSwjH1VRxa6kquUjeDWeEy",
-						Status:          types.OperationStatusApplied,
-						Level:           1516349,
-						Network:         types.Mainnet,
-						Hash:            "ooz1bkCQeYsZYP7vb4Dx7pYPRpWN11Z3G3yP1v4HAfdNXuHRv9c",
-						Timestamp:       timestamp,
-						Entrypoint:      "transfer",
-						Tags:            types.FA2Tag | types.LedgerTag,
-						Initiator:       "tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb",
+						Kind: types.OperationKindTransaction,
+						Source: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb",
+							Type:    types.AccountTypeTz,
+						},
+						Fee:      2235,
+						Counter:  9432992,
+						GasLimit: 18553,
+						Destination: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1QcxwB4QyPKfmSwjH1VRxa6kquUjeDWeEy",
+							Type:    types.AccountTypeContract,
+						},
+						Status:    types.OperationStatusApplied,
+						Level:     1516349,
+						Network:   types.Mainnet,
+						Hash:      "ooz1bkCQeYsZYP7vb4Dx7pYPRpWN11Z3G3yP1v4HAfdNXuHRv9c",
+						Timestamp: timestamp,
+						Entrypoint: types.NullString{
+							Str:   "transfer",
+							Valid: true,
+						},
+						Tags: types.FA2Tag | types.LedgerTag,
+						Initiator: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb",
+							Type:    types.AccountTypeTz,
+						},
+						Delegate: account.Account{
+							Network: types.Mainnet,
+						},
 						Parameters:      []byte(`{"entrypoint":"transfer","value":[{"prim":"Pair","args":[{"string":"tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb"},[{"prim":"Pair","args":[{"string":"tz1a6ZKyEoCmfpsY74jEq6uKBK8RQXdj1aVi"},{"prim":"Pair","args":[{"int":"12"},{"int":"1"}]}]}]]}]}`),
 						ProtocolID:      4,
 						DeffatedStorage: []byte(`{"prim":"Pair","args":[{"prim":"Pair","args":[{"prim":"Pair","args":[{"int":"746"},{"int":"4992269"}]},{"prim":"Pair","args":[{"int":"747"},{"int":"748"}]}]},{"int":"749"}]}`),
 						Transfers: []*transfer.Transfer{
 							{
-								TokenID:   12,
-								From:      "tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb",
-								To:        "tz1a6ZKyEoCmfpsY74jEq6uKBK8RQXdj1aVi",
-								Amount:    decimal.NewFromInt(1),
-								Network:   types.Mainnet,
-								Contract:  "KT1QcxwB4QyPKfmSwjH1VRxa6kquUjeDWeEy",
-								Initiator: "tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb",
+								TokenID: 12,
+								From: account.Account{
+									Network: types.Mainnet,
+									Address: "tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb",
+									Type:    types.AccountTypeTz,
+								},
+								To: account.Account{
+									Network: types.Mainnet,
+									Address: "tz1a6ZKyEoCmfpsY74jEq6uKBK8RQXdj1aVi",
+									Type:    types.AccountTypeTz,
+								},
+								Amount:   decimal.NewFromInt(1),
+								Network:  types.Mainnet,
+								Contract: "KT1QcxwB4QyPKfmSwjH1VRxa6kquUjeDWeEy",
+								Initiator: account.Account{
+									Network: types.Mainnet,
+									Address: "tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb",
+									Type:    types.AccountTypeTz,
+								},
 								Status:    types.OperationStatusApplied,
 								Timestamp: timestamp,
 								Level:     1516349,
@@ -1079,15 +1515,23 @@ func TestGroup_Parse(t *testing.T) {
 					{
 						Network:  types.Mainnet,
 						Contract: "KT1QcxwB4QyPKfmSwjH1VRxa6kquUjeDWeEy",
-						Address:  "tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb",
-						TokenID:  12,
-						Balance:  decimal.NewFromInt(-1),
+						Account: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1aCzsYRUgDZBV7zb7Si6q2AobrocFW5qwb",
+							Type:    types.AccountTypeTz,
+						},
+						TokenID: 12,
+						Balance: decimal.NewFromInt(-1),
 					}, {
 						Network:  types.Mainnet,
 						Contract: "KT1QcxwB4QyPKfmSwjH1VRxa6kquUjeDWeEy",
-						Address:  "tz1a6ZKyEoCmfpsY74jEq6uKBK8RQXdj1aVi",
-						TokenID:  12,
-						Balance:  decimal.NewFromInt(1),
+						Account: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1a6ZKyEoCmfpsY74jEq6uKBK8RQXdj1aVi",
+							Type:    types.AccountTypeTz,
+						},
+						TokenID: 12,
+						Balance: decimal.NewFromInt(1),
 					},
 				},
 			},
@@ -1095,15 +1539,19 @@ func TestGroup_Parse(t *testing.T) {
 			name: "oocFt4vkkgQGfoRH54328cJUbDdWvj3x6KEs5Arm4XhqwwJmnJ8",
 			rpc:  rpc,
 			ctx: &config.Context{
-				Storage:       generalRepo,
-				Contracts:     contractRepo,
-				BigMapDiffs:   bmdRepo,
-				Blocks:        blockRepo,
-				Protocols:     protoRepo,
-				TZIP:          tzipRepo,
-				TokenBalances: tbRepo,
-				Cache:         cache.NewCache(),
-				SharePath:     "./test",
+				Storage:          generalRepo,
+				Contracts:        contractRepo,
+				BigMapDiffs:      bmdRepo,
+				Blocks:           blockRepo,
+				Protocols:        protoRepo,
+				ContractMetadata: cmRepo,
+				TokenBalances:    tbRepo,
+				Scripts:          scriptRepo,
+				Cache: cache.NewCache(
+					map[types.Network]noderpc.INode{
+						types.Mainnet: rpc,
+					}, blockRepo, accountsRepo, contractRepo, protoRepo, cmRepo, bluemonday.UGCPolicy(),
+				),
 			},
 			paramsOpts: []ParseParamsOption{
 				WithHead(noderpc.Header{
@@ -1113,6 +1561,18 @@ func TestGroup_Parse(t *testing.T) {
 					ChainID:   "NetXdQprcVkpaWU",
 				}),
 				WithNetwork(types.Mainnet),
+				WithProtocol(&protocol.Protocol{
+					Constants: &protocol.Constants{
+						CostPerByte:                  1000,
+						HardGasLimitPerOperation:     400000,
+						HardStorageLimitPerOperation: 60000,
+						TimeBetweenBlocks:            60,
+					},
+					Hash:    "PsFLorenaUUuikDWvMDr6fGBRG8kt3e3D3fHoXK1j1BFRxeSH4i",
+					Network: types.Mainnet,
+					ID:      4,
+					SymLink: bcd.SymLinkBabylon,
+				}),
 			},
 			filename: "./data/rpc/opg/oocFt4vkkgQGfoRH54328cJUbDdWvj3x6KEs5Arm4XhqwwJmnJ8.json",
 			storage: map[string]int64{
@@ -1134,40 +1594,77 @@ func TestGroup_Parse(t *testing.T) {
 				},
 				Operations: []*operation.Operation{
 					{
-						Kind:            types.OperationKindTransaction,
-						Hash:            "oocFt4vkkgQGfoRH54328cJUbDdWvj3x6KEs5Arm4XhqwwJmnJ8",
-						Source:          "tz1WKygtstVY96oyc6Rmk945dMf33LeihgWT",
-						Initiator:       "tz1WKygtstVY96oyc6Rmk945dMf33LeihgWT",
-						Status:          types.OperationStatusApplied,
-						Fee:             5043,
-						Counter:         10671622,
-						GasLimit:        46511,
-						StorageLimit:    400,
-						Amount:          0,
-						Timestamp:       timestamp,
-						Level:           1520888,
-						Network:         types.Mainnet,
-						Entrypoint:      "update_record",
-						ProtocolID:      4,
-						Destination:     "KT1H1MqmUM4aK9i1833EBmYCCEfkbt6ZdSBc",
+						Kind: types.OperationKindTransaction,
+						Hash: "oocFt4vkkgQGfoRH54328cJUbDdWvj3x6KEs5Arm4XhqwwJmnJ8",
+						Source: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1WKygtstVY96oyc6Rmk945dMf33LeihgWT",
+							Type:    types.AccountTypeTz,
+						},
+						Initiator: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1WKygtstVY96oyc6Rmk945dMf33LeihgWT",
+							Type:    types.AccountTypeTz,
+						},
+						Delegate: account.Account{
+							Network: types.Mainnet,
+						},
+						Status:       types.OperationStatusApplied,
+						Fee:          5043,
+						Counter:      10671622,
+						GasLimit:     46511,
+						StorageLimit: 400,
+						Amount:       0,
+						Timestamp:    timestamp,
+						Level:        1520888,
+						Network:      types.Mainnet,
+						Entrypoint: types.NullString{
+							Str:   "update_record",
+							Valid: true,
+						},
+						ProtocolID: 4,
+						Destination: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1H1MqmUM4aK9i1833EBmYCCEfkbt6ZdSBc",
+							Type:    types.AccountTypeContract,
+						},
 						Parameters:      []byte(`{"entrypoint":"update_record","value":{"prim":"Pair","args":[{"bytes":"62616c6c732e74657a"},{"prim":"Pair","args":[{"prim":"Some","args":[{"string":"tz1dDQc4KsTHEFe3USc66Wti2pBatZ3UDbD4"}]},{"prim":"Pair","args":[{"string":"tz1WKygtstVY96oyc6Rmk945dMf33LeihgWT"},[]]}]}]}}`),
 						DeffatedStorage: []byte(`{"prim":"Pair","args":[{"prim":"Pair","args":[{"bytes":"01535d971759846a1f2be8610e36f2db40fe8ce40800"},{"int":"1268"}]},{"bytes":"01ebb657570e494e8a7bd43ac3bf7cfd0267a32a9f00"}]}`),
 					},
 					{
-						Kind:            types.OperationKindTransaction,
-						Hash:            "oocFt4vkkgQGfoRH54328cJUbDdWvj3x6KEs5Arm4XhqwwJmnJ8",
-						Internal:        true,
-						Timestamp:       timestamp,
-						Status:          types.OperationStatusApplied,
-						Level:           1520888,
-						Nonce:           newInt64Ptr(0),
-						Counter:         10671622,
-						Network:         types.Mainnet,
-						ProtocolID:      4,
-						Entrypoint:      "execute",
-						Initiator:       "tz1WKygtstVY96oyc6Rmk945dMf33LeihgWT",
-						Source:          "KT1H1MqmUM4aK9i1833EBmYCCEfkbt6ZdSBc",
-						Destination:     "KT1GBZmSxmnKJXGMdMLbugPfLyUPmuLSMwKS",
+						Kind:       types.OperationKindTransaction,
+						Hash:       "oocFt4vkkgQGfoRH54328cJUbDdWvj3x6KEs5Arm4XhqwwJmnJ8",
+						Internal:   true,
+						Timestamp:  timestamp,
+						Status:     types.OperationStatusApplied,
+						Level:      1520888,
+						Nonce:      newInt64Ptr(0),
+						Counter:    10671622,
+						Network:    types.Mainnet,
+						ProtocolID: 4,
+						Burned:     27000,
+						Entrypoint: types.NullString{
+							Str:   "execute",
+							Valid: true,
+						},
+						Initiator: account.Account{
+							Network: types.Mainnet,
+							Address: "tz1WKygtstVY96oyc6Rmk945dMf33LeihgWT",
+							Type:    types.AccountTypeTz,
+						},
+						Source: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1H1MqmUM4aK9i1833EBmYCCEfkbt6ZdSBc",
+							Type:    types.AccountTypeContract,
+						},
+						Destination: account.Account{
+							Network: types.Mainnet,
+							Address: "KT1GBZmSxmnKJXGMdMLbugPfLyUPmuLSMwKS",
+							Type:    types.AccountTypeContract,
+						},
+						Delegate: account.Account{
+							Network: types.Mainnet,
+						},
 						Parameters:      []byte(`{"entrypoint":"execute","value":{"prim":"Pair","args":[{"string":"UpdateRecord"},{"prim":"Pair","args":[{"bytes":"0507070a0000000962616c6c732e74657a070705090a000000160000c0ca282a775946b5ecbe02e5cf73e25f6b62b70c07070a000000160000753f63893674b6d523f925f0d787bf9270b95c330200000000"},{"bytes":"0000753f63893674b6d523f925f0d787bf9270b95c33"}]}]}}`),
 						DeffatedStorage: []byte(`{"prim":"Pair","args":[[{"int":"1260"},{"prim":"Pair","args":[{"prim":"Pair","args":[{"int":"1261"},{"int":"1262"}]},{"prim":"Pair","args":[{"int":"1263"},{"int":"9824"}]}]},{"prim":"Pair","args":[{"bytes":"01ebb657570e494e8a7bd43ac3bf7cfd0267a32a9f00"},{"int":"1264"}]},{"int":"1265"},{"int":"1266"}],[{"bytes":"014796e76af90e6327adfab057bbbe0375cd2c8c1000"},{"bytes":"015c6799f783b8d118b704267f634c5d24d19e9a9f00"},{"bytes":"0168e9b7d86646e312c76dfbedcbcdb24320875a3600"},{"bytes":"019178a76f3c41a9541d2291cad37dd5fb96a6850500"},{"bytes":"01ac3638385caa4ad8126ea84e061f4f49baa44d3c00"},{"bytes":"01d2a0974172cf6fc8b1eefdebd5bea681616f7c6f00"}]]}`),
 						BigMapDiffs: []*bigmapdiff.BigMapDiff{
@@ -1192,8 +1689,87 @@ func TestGroup_Parse(t *testing.T) {
 					},
 				},
 			},
+		}, {
+			name: "ooffKPL6WmMgqzLGtRtLp2HdEbVL3K2fVzKQLyxsBFMC84wpjRt",
+			rpc:  rpc,
+			ctx: &config.Context{
+				Storage:          generalRepo,
+				Contracts:        contractRepo,
+				BigMapDiffs:      bmdRepo,
+				Blocks:           blockRepo,
+				Protocols:        protoRepo,
+				ContractMetadata: cmRepo,
+				TokenBalances:    tbRepo,
+				Scripts:          scriptRepo,
+				Cache: cache.NewCache(
+					map[types.Network]noderpc.INode{
+						types.Hangzhounet: rpc,
+					}, blockRepo, accountsRepo, contractRepo, protoRepo, cmRepo, bluemonday.UGCPolicy(),
+				),
+			},
+			paramsOpts: []ParseParamsOption{
+				WithHead(noderpc.Header{
+					Timestamp: timestamp,
+					Protocol:  "PtHangzHogokSuiMHemCuowEavgYTP8J5qQ9fQS793MHYFpCY3r",
+					Level:     15400,
+					ChainID:   "NetXuXoGoLxNK6o",
+				}),
+				WithNetwork(types.Hangzhounet),
+				WithProtocol(&protocol.Protocol{
+					Constants: &protocol.Constants{
+						CostPerByte:                  1000,
+						HardGasLimitPerOperation:     400000,
+						HardStorageLimitPerOperation: 60000,
+						TimeBetweenBlocks:            60,
+					},
+					Hash:    "PtHangzHogokSuiMHemCuowEavgYTP8J5qQ9fQS793MHYFpCY3r",
+					Network: types.Hangzhounet,
+					ID:      5,
+					SymLink: bcd.SymLinkBabylon,
+				}),
+			},
+			filename: "./data/rpc/opg/ooffKPL6WmMgqzLGtRtLp2HdEbVL3K2fVzKQLyxsBFMC84wpjRt.json",
+			want: &parsers.Result{
+				Operations: []*operation.Operation{
+					{
+						Kind: types.OperationKindRegisterGlobalConstant,
+						Hash: "ooffKPL6WmMgqzLGtRtLp2HdEbVL3K2fVzKQLyxsBFMC84wpjRt",
+						Source: account.Account{
+							Network: types.Hangzhounet,
+							Address: "tz1SMARcpWCydHsGgz4MRoK9NkbpBmmUAfNe",
+							Type:    types.AccountTypeTz,
+						},
+						Initiator: account.Account{
+							Network: types.Hangzhounet,
+							Address: "tz1SMARcpWCydHsGgz4MRoK9NkbpBmmUAfNe",
+							Type:    types.AccountTypeTz,
+						},
+						Status:       types.OperationStatusApplied,
+						Fee:          377,
+						Counter:      1,
+						GasLimit:     1333,
+						ConsumedGas:  1233,
+						StorageSize:  80,
+						StorageLimit: 100,
+						Timestamp:    timestamp,
+						Level:        15400,
+						Network:      types.Hangzhounet,
+						ProtocolID:   5,
+					},
+				},
+				GlobalConstants: []*global_constant.GlobalConstant{
+					{
+						Network:   types.Hangzhounet,
+						Level:     15400,
+						Timestamp: timestamp,
+						Address:   "expru54tk2k4E81xQy63P6x3RijnTz51s2m7BV7pr3fDQH8YDqiYvR",
+						Value:     []byte(`[{"prim":"PUSH","args":[{"prim":"int"},{"int":"10"}]},{"prim":"SWAP"},{"prim":"MUL"}]`),
+					},
+				},
+			},
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			for address, level := range tt.storage {
@@ -1209,7 +1785,7 @@ func TestGroup_Parse(t *testing.T) {
 					AnyTimes()
 			}
 
-			var op noderpc.OperationGroup
+			var op noderpc.LightOperationGroup
 			if err := readJSONFile(tt.filename, &op); err != nil {
 				t.Errorf(`readJSONFile("%s") = error %v`, tt.filename, err)
 				return
