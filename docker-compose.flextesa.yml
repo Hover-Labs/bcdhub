@@ -87,7 +87,7 @@ services:
   flextesa:
     restart: always
     image: tqtezos/flextesa:20211206
-    command: flobox start --keep-root
+    command: hangzbox start --keep-root
     environment:
       - block_time=4
       - flextesa_node_cors_origin=*
