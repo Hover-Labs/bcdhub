@@ -93,7 +93,8 @@ services:
       - block_time=4
       - flextesa_node_cors_origin=*
     ports:
-      - 127.0.0.1:20000:20000
+      - 127.0.0.1:8732:20000
+      - 172.17.0.1:8732:20000
     expose:
       - 20000/tcp
     logging: *bcd-logging
@@ -104,9 +105,7 @@ services:
     container_name: sandbox-gui
     restart: always
     image: ghcr.io/baking-bad/bcdhub-gui:${TAG}
-    command: /bin/sh -c 'sed -i "s/API_URI:\"http:\/\/localhost:14000\/v1\"/API_URI:\"https:\/\/bcd.hover.engineering\/v1\"/g" js/app.e13a5560.js && sh /docker-entrypoint.sh'
-    environment:
-      - VUE_APP_API_URI=https://bcd.hover.engineering/v1
+    command: bash -c 'sed -i "s/http:\/\/localhost:14000\/v1/https:\/\/bcd.hover.engineering\/v1/g" js/app.e13a5560.js && nginx -g "daemon off;"'
     depends_on:
       - api
     ports:
